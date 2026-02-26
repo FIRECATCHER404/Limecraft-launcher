@@ -1,0 +1,128 @@
+.root {
+    -fx-font-family: "Segoe UI", "Noto Sans", sans-serif;
+    -fx-base: #111318;
+    -fx-background-color: linear-gradient(to bottom right, #0d1014, #171c23);
+}
+
+.label {
+    -fx-text-fill: #d5dbe4;
+}
+
+.title {
+    -fx-text-fill: #a8ff83;
+    -fx-font-size: 32px;
+    -fx-font-weight: bold;
+}
+
+.text-field,
+.list-view,
+.button,
+.progress-bar,
+.separator {
+    -fx-background-radius: 10;
+    -fx-border-radius: 10;
+}
+
+.text-field,
+.list-view {
+    -fx-control-inner-background: #1a2029;
+    -fx-background-color: #1a2029;
+    -fx-text-fill: #ecf1f7;
+    -fx-border-color: #2b3442;
+}
+
+.list-cell {
+    -fx-background-color: #1a2029;
+    -fx-text-fill: #d9e0ea;
+}
+
+.list-cell:filled:selected {
+    -fx-background-color: #2c5a35;
+    -fx-text-fill: #e8ffe5;
+}
+
+.button {
+    -fx-background-color: #24452c;
+    -fx-text-fill: #d8f8ce;
+    -fx-font-weight: 600;
+    -fx-padding: 10 14;
+}
+
+.button:hover {
+    -fx-background-color: #2e5b39;
+}
+
+.progress-bar > .bar {
+    -fx-background-color: linear-gradient(to right, #8ed26a, #4fa54f);
+}
+
+.progress-bar > .track {
+    -fx-background-color: #1f2530;
+}
+
+.console-log {
+    -fx-control-inner-background: #000000;
+    -fx-background-color: #000000;
+    -fx-text-fill: #a8ff83;
+    -fx-highlight-fill: #2e5b39;
+    -fx-highlight-text-fill: #d8ffd2;
+    -fx-border-color: #2b3442;
+}
+
+.console-log .content {
+    -fx-background-color: #000000;
+}
+
+.search-field {
+    -fx-prompt-text-fill: #a8ff83;
+}
+
+.launch-button {
+    -fx-background-color: #2f6f3b;
+    -fx-text-fill: #e6ffe0;
+}
+
+.launch-button:hover {
+    -fx-background-color: #3c844b;
+}
+
+.launch-button-kill {
+    -fx-background-color: #5a1f1f;
+    -fx-text-fill: #ffdede;
+}
+
+.launch-button-kill:hover {
+    -fx-background-color: #6f2a2a;
+}
+
+.selected-version {
+    -fx-text-fill: #a8ff83;
+    -fx-font-size: 12px;
+}
+
+.java-popup-root {
+    -fx-background-color: linear-gradient(to bottom right, #0f1318, #161d25);
+}
+
+.java-table {
+    -fx-background-color: #151b22;
+    -fx-control-inner-background: #151b22;
+    -fx-border-color: #2b3442;
+}
+
+.java-table .column-header-background {
+    -fx-background-color: #1f2732;
+}
+
+.java-table .column-header, .java-table .filler {
+    -fx-background-color: #1f2732;
+}
+
+.java-table .column-header .label {
+    -fx-text-fill: #baff98;
+    -fx-font-weight: bold;
+}
+
+.java-popup-buttons {
+    -fx-padding: 4 0 0 0;
+}

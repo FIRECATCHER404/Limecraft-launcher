@@ -1,0 +1,22 @@
+# Gradle
+.gradle/
+build/
+
+# Packaging output
+dist/
+dist*/
+
+# Logs
+*.log
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# OS junk
+desktop.ini
+Thumbs.db
+
+# Local generated icon/cache
+limecraft.generated.ico
