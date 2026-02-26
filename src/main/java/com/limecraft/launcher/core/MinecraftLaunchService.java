@@ -27,6 +27,8 @@ public final class MinecraftLaunchService {
         String os = detectOs();
         Path versionDir = gameDir.resolve("versions").resolve(versionId);
         Path gameJar = versionDir.resolve(versionId + ".jar");
+        Path instanceDir = gameDir.resolve("instances").resolve(safeFolderName(versionId));
+        Files.createDirectories(instanceDir);
 
         List<String> classpathEntries = new ArrayList<>();
         JsonArray libs = versionMeta.getAsJsonArray("libraries");
@@ -50,7 +52,7 @@ public final class MinecraftLaunchService {
         Files.createDirectories(nativesDir);
         extractNatives(versionMeta, nativesDir, os);
 
-        Map<String, String> vars = buildVariables(versionMeta, account, offlineUsername, classpathEntries, nativesDir, versionId);
+        Map<String, String> vars = buildVariables(versionMeta, account, offlineUsername, classpathEntries, nativesDir, instanceDir, versionId);
         List<String> args = new ArrayList<>();
         args.add(javaPath == null || javaPath.isBlank() ? "java" : javaPath);
         args.add("-Xmx" + (xmx == null || xmx.isBlank() ? "4G" : xmx));
@@ -76,7 +78,7 @@ public final class MinecraftLaunchService {
         }
 
         ProcessBuilder pb = new ProcessBuilder(args);
-        pb.directory(gameDir.toFile());
+        pb.directory(instanceDir.toFile());
         pb.redirectErrorStream(true);
         return pb.start();
     }
@@ -175,7 +177,7 @@ public final class MinecraftLaunchService {
         }
     }
 
-    private Map<String, String> buildVariables(JsonObject meta, MinecraftAccount account, String offlineUsername, List<String> cp, Path nativesDir, String versionId) {
+    private Map<String, String> buildVariables(JsonObject meta, MinecraftAccount account, String offlineUsername, List<String> cp, Path nativesDir, Path instanceDir, String versionId) {
         String username = account != null
                 ? account.username()
                 : (offlineUsername == null || offlineUsername.isBlank() ? "Player" : offlineUsername);
@@ -187,7 +189,7 @@ public final class MinecraftLaunchService {
         Map<String, String> vars = new HashMap<>();
         vars.put("auth_player_name", username);
         vars.put("version_name", versionId);
-        vars.put("game_directory", gameDir.toAbsolutePath().toString());
+        vars.put("game_directory", instanceDir.toAbsolutePath().toString());
         vars.put("assets_root", gameDir.resolve("assets").toAbsolutePath().toString());
         vars.put("assets_index_name", meta.get("assets").getAsString());
         vars.put("auth_uuid", uuid);
@@ -220,6 +222,10 @@ public final class MinecraftLaunchService {
             return "Limecraft";
         }
         return type + " (Limecraft)";
+    }
+
+    private String safeFolderName(String versionId) {
+        return versionId.replaceAll("[\\\\/:*?\"<>|]", "_");
     }
 
     private String detectOs() {

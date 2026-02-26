@@ -126,3 +126,17 @@
 .java-popup-buttons {
     -fx-padding: 4 0 0 0;
 }
+.installed-dot {
+    -fx-min-width: 10px;
+    -fx-min-height: 10px;
+    -fx-pref-width: 10px;
+    -fx-pref-height: 10px;
+    -fx-max-width: 10px;
+    -fx-max-height: 10px;
+    -fx-background-color: #74ff58;
+    -fx-background-radius: 100;
+}
+
+.installed-dot-off {
+    -fx-background-color: transparent;
+}

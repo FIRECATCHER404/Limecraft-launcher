@@ -453,6 +453,7 @@ public final class LimecraftApp extends Application {
                     setStatus("Installing " + selected.id() + " before launch...", 0.15);
                     installService.installVersion(selected, this::setStatus);
                     setStatus("Installed " + selected.id(), 0.8);
+                    Platform.runLater(() -> versionsList.refresh());
                 }
                 JsonObject meta = JsonParser.parseString(Files.readString(versionJson)).getAsJsonObject();
                 MinecraftAccount accountToUse = null;
@@ -569,6 +570,11 @@ public final class LimecraftApp extends Application {
         }
     }
 
+    private boolean isVersionInstalled(VersionEntry version) {
+        Path versionDir = gameDir.resolve("versions").resolve(version.id());
+        return Files.exists(versionDir.resolve(version.id() + ".json"))
+                && Files.exists(versionDir.resolve(version.id() + ".jar"));
+    }
     private void applyVersionFilter() {
         String query = searchField.getText() == null ? "" : searchField.getText().trim().toLowerCase(Locale.ROOT);
         boolean includeExperimental = experimentToggle.isSelected();
@@ -670,4 +676,6 @@ public final class LimecraftApp extends Application {
         launch(args);
     }
 }
+
+
 
