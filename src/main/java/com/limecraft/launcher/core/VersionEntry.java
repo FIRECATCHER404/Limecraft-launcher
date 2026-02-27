@@ -28,6 +28,7 @@ public record VersionEntry(String id, String type, String url, String releaseTim
                 || lowerId.contains("23w13a_or_b")
                 || lowerId.contains("25w14craftmine")
                 || lowerId.contains("3D Shareware v1.34")
+                || lowerId.contains("1.RV-Pre1")
                 || lowerId.contains("24w14potato");
     }
 

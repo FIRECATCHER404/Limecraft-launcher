@@ -57,6 +57,10 @@ public final class MinecraftLaunchService {
         args.add(javaPath == null || javaPath.isBlank() ? "java" : javaPath);
         args.add("-Xmx" + (xmx == null || xmx.isBlank() ? "4G" : xmx));
         args.add("-Djava.library.path=" + nativesDir);
+        String mainClass = versionMeta.get("mainClass").getAsString();
+        if (shouldUseLegacyDirectMain(versionMeta, gameJar)) {
+            mainClass = "net.minecraft.client.Minecraft";
+        }
 
         if (versionMeta.has("arguments")) {
             JsonObject arguments = versionMeta.getAsJsonObject("arguments");
@@ -65,7 +69,7 @@ public final class MinecraftLaunchService {
 
         args.add("-cp");
         args.add(String.join(System.getProperty("path.separator"), classpathEntries));
-        args.add(versionMeta.get("mainClass").getAsString());
+        args.add(mainClass);
 
         if (versionMeta.has("arguments")) {
             JsonObject arguments = versionMeta.getAsJsonObject("arguments");
@@ -191,6 +195,7 @@ public final class MinecraftLaunchService {
         vars.put("version_name", versionId);
         vars.put("game_directory", instanceDir.toAbsolutePath().toString());
         vars.put("assets_root", gameDir.resolve("assets").toAbsolutePath().toString());
+        vars.put("game_assets", gameDir.resolve("assets").toAbsolutePath().toString());
         vars.put("assets_index_name", meta.get("assets").getAsString());
         vars.put("auth_uuid", uuid);
         vars.put("auth_access_token", token);
@@ -208,6 +213,31 @@ public final class MinecraftLaunchService {
         return vars;
     }
 
+    private boolean shouldUseLegacyDirectMain(JsonObject meta, Path gameJar) {
+        String type = meta.has("type") ? meta.get("type").getAsString() : "";
+        String mainClass = meta.has("mainClass") ? meta.get("mainClass").getAsString() : "";
+        if (!"custom".equalsIgnoreCase(type)) {
+            return false;
+        }
+        if (!"net.minecraft.launchwrapper.Launch".equals(mainClass)) {
+            return false;
+        }
+        if (!meta.has("minecraftArguments")) {
+            return false;
+        }
+        return jarContains(gameJar, "net/minecraft/client/Minecraft.class");
+    }
+
+    private boolean jarContains(Path jarPath, String entryName) {
+        if (!Files.exists(jarPath)) {
+            return false;
+        }
+        try (JarFile jar = new JarFile(jarPath.toFile())) {
+            return jar.getEntry(entryName) != null;
+        } catch (IOException ignored) {
+            return false;
+        }
+    }
     private String replace(String input, Map<String, String> vars) {
         String out = input;
         for (var e : vars.entrySet()) {
@@ -235,3 +265,8 @@ public final class MinecraftLaunchService {
         return "linux";
     }
 }
+
+
+
+
+
