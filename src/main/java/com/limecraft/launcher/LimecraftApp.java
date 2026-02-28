@@ -18,6 +18,8 @@ import javafx.geometry.Pos;
 import javafx.scene.Scene;
 import javafx.scene.control.*;
 import javafx.scene.image.Image;
+import javafx.scene.input.Clipboard;
+import javafx.scene.input.ClipboardContent;
 import javafx.scene.layout.*;
 import javafx.stage.FileChooser;
 import javafx.stage.Modality;
@@ -48,6 +50,7 @@ public final class LimecraftApp extends Application {
     private static final String KEY_OFFLINE_USERNAME = "offline_username";
     private static final String KEY_ACCOUNT_MODE = "account_mode";
     private static final String KEY_RECENT_VERSIONS = "recent_versions";
+    private static final String MICROSOFT_CLIENT_ID = "ba5cdd7c-bc36-4702-9613-35f14f83e52c";
 
     private final ExecutorService io = Executors.newFixedThreadPool(4);
 
@@ -65,7 +68,6 @@ public final class LimecraftApp extends Application {
     private Label accountLabel;
     private TextField javaPathField;
     private TextField ramField;
-    private TextField clientIdField;
     private ComboBox<String> accountModeBox;
     private TextField offlineUsernameField;
     private TextField searchField;
@@ -161,7 +163,6 @@ public final class LimecraftApp extends Application {
         detectJavaButton = new Button("Detect Java");
         detectJavaButton.setOnAction(e -> openJavaDetector());
         ramField = new TextField("4G");
-        clientIdField = new TextField(MicrosoftAuthService.DEFAULT_CLIENT_ID);
         offlineUsernameField = new TextField(savedOfflineUsername);
         offlineUsernameField.textProperty().addListener((obs, oldVal, newVal) -> {
             String trimmed = newVal == null ? "" : newVal.trim();
@@ -216,7 +217,6 @@ public final class LimecraftApp extends Application {
         signInButton.setMaxWidth(Double.MAX_VALUE);
 
         VBox microsoftAuthBox = new VBox(8,
-                labeledNode("Microsoft Client ID", clientIdField),
                 signInButton,
                 accountLabel
         );
@@ -264,7 +264,6 @@ public final class LimecraftApp extends Application {
 
         controlsToDisableOnRun = List.of(
                 accountModeBox,
-                clientIdField,
                 signInButton,
                 offlineUsernameField,
                 searchField,
@@ -789,17 +788,15 @@ public final class LimecraftApp extends Application {
         custom.sort(Comparator.comparing(VersionEntry::releaseTime).reversed());
         return custom;
     }
-private void signIn() {
+    private void signIn() {
         if (!MODE_MICROSOFT.equals(accountModeBox.getValue())) {
             setStatus("Switch Account Mode to Microsoft to sign in.", 0);
             return;
         }
-        String clientId = clientIdField.getText().trim();
-        if (clientId.isEmpty() || MicrosoftAuthService.DEFAULT_CLIENT_ID.equals(clientId)) {
-            setStatus("Set a valid Azure App Client ID first", 0);
-            return;
-        }
+        String clientId = MICROSOFT_CLIENT_ID;
 
+        appendLog("[Limecraft] Microsoft auth client id: " + clientId);
+        appendLog("[Limecraft] Microsoft auth endpoint: /consumers/oauth2/v2.0/devicecode");
         setStatus("Starting Microsoft device login...", 0.1);
         io.submit(() -> {
             try {
@@ -807,10 +804,26 @@ private void signIn() {
                 DeviceCodeInfo code = auth.beginDeviceLogin();
 
                 Platform.runLater(() -> {
+                    String otcCode = code.userCode() == null ? "" : code.userCode().trim();
+                    String link = (code.verificationUri() == null || code.verificationUri().isBlank()) ? "https://microsoft.com/devicelogin" : code.verificationUri();
+
+                    if (!otcCode.isBlank()) {
+                        ClipboardContent clipContent = new ClipboardContent();
+                        clipContent.putString(otcCode);
+                        Clipboard.getSystemClipboard().setContent(clipContent);
+                    }
+
                     Alert alert = new Alert(Alert.AlertType.INFORMATION);
                     alert.setHeaderText("Microsoft Sign-In");
                     alert.setTitle("Device Code Login");
-                    alert.setContentText(code.message());
+
+                    Label instructions = new Label("Open this link, then enter the code to continue sign-in:");
+                    Hyperlink signInLink = new Hyperlink(link);
+                    signInLink.setOnAction(evt -> getHostServices().showDocument(link));
+                    Label codeLabel = new Label("Code: " + otcCode);
+
+                    VBox content = new VBox(8, instructions, signInLink, codeLabel);
+                    alert.getDialogPane().setContent(content);
                     alert.show();
                 });
 
@@ -1130,6 +1143,16 @@ private void signIn() {
         launch(args);
     }
 }
+
+
+
+
+
+
+
+
+
+
 
 
 
