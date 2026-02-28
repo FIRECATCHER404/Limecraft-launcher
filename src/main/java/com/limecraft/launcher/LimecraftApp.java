@@ -1,5 +1,6 @@
 package com.limecraft.launcher;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.limecraft.launcher.auth.DeviceCodeInfo;
@@ -26,6 +27,7 @@ import javafx.stage.FileChooser;
 import javafx.stage.Modality;
 import javafx.stage.Stage;
 
+import java.awt.Desktop;
 import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
 import java.io.BufferedWriter;
@@ -33,14 +35,17 @@ import java.io.File;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
+import java.net.URLEncoder;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.stream.Stream;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Properties;
+import java.util.Set;
 import java.time.Instant;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -80,6 +85,7 @@ public final class LimecraftApp extends Application {
     private Button signInButton;
     private Button detectJavaButton;
     private Button addVersionButton;
+    private Button installFabricButton;
     private Button launchButton;
     private Label selectedVersionLabel;
     private ComboBox<String> recentBox;
@@ -126,6 +132,9 @@ public final class LimecraftApp extends Application {
             private final MenuItem deleteItem = new MenuItem("Delete Version");
             private final MenuItem editItem = new MenuItem("Edit Version");
             private final ContextMenu customMenu = new ContextMenu(deleteItem, editItem);
+            private final MenuItem fabricDeleteItem = new MenuItem("delete version");
+            private final MenuItem openModsFolderItem = new MenuItem("open mods folder");
+            private final ContextMenu fabricMenu = new ContextMenu(fabricDeleteItem, openModsFolderItem);
             private final MenuItem duplicateItem = new MenuItem("Duplicate Version");
             private final ContextMenu builtinMenu = new ContextMenu(duplicateItem);
 
@@ -137,13 +146,25 @@ public final class LimecraftApp extends Application {
                 deleteItem.setOnAction(e -> {
                     VersionEntry selected = getItem();
                     if (selected != null) {
-                        deleteCustomVersion(selected);
+                        deleteManagedVersion(selected);
                     }
                 });
                 editItem.setOnAction(e -> {
                     VersionEntry selected = getItem();
                     if (selected != null) {
                         openAddVersionDialog(null, selected);
+                    }
+                });
+                fabricDeleteItem.setOnAction(e -> {
+                    VersionEntry selected = getItem();
+                    if (selected != null) {
+                        deleteManagedVersion(selected);
+                    }
+                });
+                openModsFolderItem.setOnAction(e -> {
+                    VersionEntry selected = getItem();
+                    if (selected != null) {
+                        openFabricModsFolder(selected);
                     }
                 });
                 duplicateItem.setOnAction(e -> {
@@ -172,7 +193,14 @@ public final class LimecraftApp extends Application {
                 }
                 setText(null);
                 setGraphic(row);
-                setContextMenu(isCustomVersion(item) ? customMenu : builtinMenu);
+                if (isFabricVersion(item)) {
+                    openModsFolderItem.setDisable(!hasLaunchedVersion(item));
+                    setContextMenu(fabricMenu);
+                } else if (isCustomVersion(item)) {
+                    setContextMenu(customMenu);
+                } else {
+                    setContextMenu(builtinMenu);
+                }
             }
         });        status = new Label("Ready");
         logOutput = new TextArea();
@@ -228,6 +256,9 @@ public final class LimecraftApp extends Application {
         addVersionButton = new Button("Add Version");
         addVersionButton.setOnAction(e -> openAddVersionDialog(null, null));
 
+        installFabricButton = new Button("Install Fabric");
+        installFabricButton.setOnAction(e -> openFabricInstallDialog());
+
         launchButton = new Button("Launch");
         launchButton.getStyleClass().add("launch-button");
         launchButton.setOnAction(e -> launchSelected());
@@ -280,7 +311,7 @@ public final class LimecraftApp extends Application {
         left.setMaxWidth(420);
 
         Label versionsLabel = new Label("Minecraft Versions");
-        VBox right = new VBox(8, addVersionButton, versionsLabel, versionsList);
+        VBox right = new VBox(8, addVersionButton, installFabricButton, versionsLabel, versionsList);
         HBox.setHgrow(right, Priority.ALWAYS);
         VBox.setVgrow(versionsList, Priority.ALWAYS);
         right.setMaxWidth(Double.MAX_VALUE);
@@ -304,6 +335,7 @@ public final class LimecraftApp extends Application {
                 javaPathField,
                 detectJavaButton,
                 addVersionButton,
+                installFabricButton,
                 recentBox,
                 limecraftSuffixToggle,
                 ramField,
@@ -778,6 +810,169 @@ public final class LimecraftApp extends Application {
         dialog.showAndWait();
     }
 
+    private void openFabricInstallDialog() {
+        Stage dialog = new Stage();
+        dialog.initModality(Modality.APPLICATION_MODAL);
+        dialog.setTitle("Install Fabric");
+
+        List<VersionEntry> official = new ArrayList<>();
+        for (VersionEntry v : allVersions) {
+            if (v.url() != null && !v.url().isBlank()) {
+                official.add(v);
+            }
+        }
+
+        ComboBox<VersionEntry> baseBox = new ComboBox<>(FXCollections.observableArrayList(official));
+        baseBox.setPromptText("Select Minecraft version");
+        baseBox.setMaxWidth(Double.MAX_VALUE);
+        VersionEntry selected = versionsList.getSelectionModel().getSelectedItem();
+        if (selected != null && !isCustomVersion(selected)) {
+            baseBox.setValue(selected);
+        } else if (!official.isEmpty()) {
+            baseBox.getSelectionModel().select(0);
+        }
+
+        TextField nameField = new TextField();
+        nameField.setPromptText("Optional custom name (default: fabric-<mcVersion>)");
+
+        Label note = new Label("Installs latest stable Fabric loader for the selected Minecraft version.");
+        note.getStyleClass().add("selected-version");
+
+        Button install = new Button("Install");
+        install.getStyleClass().add("launch-button");
+        Button cancel = new Button("Cancel");
+        cancel.setOnAction(e -> dialog.close());
+
+        install.setOnAction(e -> {
+            VersionEntry base = baseBox.getValue();
+            if (base == null) {
+                fail(new IllegalArgumentException("Select a Minecraft version first."));
+                return;
+            }
+            String requestedName = nameField.getText() == null ? "" : nameField.getText().trim();
+            if (!requestedName.isBlank() && requestedName.matches(".*[\\\\/:*?\"<>|].*")) {
+                fail(new IllegalArgumentException("Name contains invalid path characters."));
+                return;
+            }
+            dialog.close();
+            io.submit(() -> {
+                try {
+                    installFabricVersion(base, requestedName);
+                } catch (Exception ex) {
+                    fail(ex);
+                }
+            });
+        });
+
+        GridPane form = new GridPane();
+        form.setHgap(8);
+        form.setVgap(8);
+        form.add(new Label("Minecraft Version"), 0, 0);
+        form.add(baseBox, 1, 0);
+        form.add(new Label("Custom Name"), 0, 1);
+        form.add(nameField, 1, 1);
+
+        ColumnConstraints c0 = new ColumnConstraints();
+        c0.setMinWidth(120);
+        ColumnConstraints c1 = new ColumnConstraints();
+        c1.setHgrow(Priority.ALWAYS);
+        form.getColumnConstraints().addAll(c0, c1);
+
+        Region spacer = new Region();
+        HBox.setHgrow(spacer, Priority.ALWAYS);
+        HBox buttons = new HBox(8, spacer, install, cancel);
+
+        VBox root = new VBox(10, form, note, buttons);
+        root.setPadding(new Insets(12));
+
+        Scene scene = new Scene(root, 700, 180);
+        scene.getStylesheets().add(getClass().getResource("/limecraft.css").toExternalForm());
+        dialog.setScene(scene);
+        dialog.showAndWait();
+    }
+
+    private void installFabricVersion(VersionEntry base, String requestedName) throws Exception {
+        if (base.url() == null || base.url().isBlank()) {
+            throw new IllegalStateException("Selected base version does not have official metadata URL.");
+        }
+
+        ensureBaseInstalled(base);
+
+        setStatus("Resolving Fabric loader for " + base.id() + "...", 0.2);
+        String loaderVersion = fetchLatestFabricLoaderVersion(base.id());
+        if (loaderVersion == null || loaderVersion.isBlank()) {
+            throw new IllegalStateException("No Fabric loader available for " + base.id());
+        }
+
+        String mcSegment = URLEncoder.encode(base.id(), StandardCharsets.UTF_8).replace("+", "%20");
+        String loaderSegment = URLEncoder.encode(loaderVersion, StandardCharsets.UTF_8).replace("+", "%20");
+        String profileUrl = "https://meta.fabricmc.net/v2/versions/loader/" + mcSegment + "/" + loaderSegment + "/profile/json";
+
+        setStatus("Downloading Fabric profile...", 0.35);
+        JsonObject profile = http.getJson(profileUrl);
+
+        String profileId = profile.has("id") ? profile.get("id").getAsString() : ("fabric-loader-" + loaderVersion + "-" + base.id());
+        String customId = (requestedName == null || requestedName.isBlank()) ? profileId : requestedName;
+
+        Path targetDir = gameDir.resolve("versions").resolve(customId);
+        Files.createDirectories(targetDir);
+
+        profile.addProperty("id", customId);
+        profile.addProperty("type", "fabric");
+        profile.addProperty("releaseTime", Instant.now().toString());
+
+        Path targetManifest = targetDir.resolve(customId + ".json");
+        Files.writeString(targetManifest, profile.toString(), StandardCharsets.UTF_8);
+
+        setStatus("Downloading Fabric dependencies...", 0.5);
+        installService.installMetadataDependencies(profile, this::setStatus);
+        ensureInheritedDependenciesInstalled(profile);
+
+        VersionEntry custom = new VersionEntry(customId, "fabric", "", Instant.now().toString());
+        Platform.runLater(() -> {
+            List<VersionEntry> updated = new ArrayList<>(allVersions);
+            updated.removeIf(v -> v.id().equalsIgnoreCase(customId));
+            updated.add(0, custom);
+            allVersions = updated;
+            lastSelectedVersionId = customId;
+            saveSettings();
+            applyVersionFilter();
+            versionsList.refresh();
+            setStatus("Installed Fabric version " + customId, 0);
+        });
+    }
+
+    private String fetchLatestFabricLoaderVersion(String minecraftVersion) throws Exception {
+        String segment = URLEncoder.encode(minecraftVersion, StandardCharsets.UTF_8).replace("+", "%20");
+        JsonArray loaders = getJsonArray("https://meta.fabricmc.net/v2/versions/loader/" + segment);
+        if (loaders.isEmpty()) {
+            return null;
+        }
+
+        String first = null;
+        for (int i = 0; i < loaders.size(); i++) {
+            JsonObject loader = loaders.get(i).getAsJsonObject();
+            if (first == null && loader.has("loader")) {
+                first = loader.getAsJsonObject("loader").get("version").getAsString();
+            }
+            if (loader.has("loader")
+                    && loader.getAsJsonObject("loader").has("stable")
+                    && loader.getAsJsonObject("loader").get("stable").getAsBoolean()) {
+                return loader.getAsJsonObject("loader").get("version").getAsString();
+            }
+        }
+        return first;
+    }
+
+    private JsonArray getJsonArray(String url) throws Exception {
+        okhttp3.Request request = new okhttp3.Request.Builder().url(url).get().build();
+        try (okhttp3.Response response = http.raw().newCall(request).execute()) {
+            if (!response.isSuccessful() || response.body() == null) {
+                throw new IllegalStateException("HTTP " + response.code() + " for " + url);
+            }
+            return JsonParser.parseString(response.body().string()).getAsJsonArray();
+        }
+    }
     private Path chooseFile(String title, String extName, String extPattern) {
         FileChooser chooser = new FileChooser();
         chooser.setTitle(title);
@@ -846,13 +1041,22 @@ public final class LimecraftApp extends Application {
         return version != null && "custom".equalsIgnoreCase(version.type());
     }
 
-    private void deleteCustomVersion(VersionEntry version) {
-        if (!isCustomVersion(version)) {
-            setStatus("Only custom versions can be deleted from the launcher list.", 0);
+    private boolean isFabricVersion(VersionEntry version) {
+        return version != null && "fabric".equalsIgnoreCase(version.type());
+    }
+
+    private boolean isManagedVersion(VersionEntry version) {
+        return isCustomVersion(version) || isFabricVersion(version);
+    }
+
+    private void deleteManagedVersion(VersionEntry version) {
+        if (!isManagedVersion(version)) {
+            setStatus("Only custom/fabric versions can be deleted from the launcher list.", 0);
             return;
         }
+        String kind = isFabricVersion(version) ? "fabric" : "custom";
         Alert confirm = new Alert(Alert.AlertType.CONFIRMATION,
-                "Delete custom version '" + version.id() + "' and its files?",
+                "Delete " + kind + " version '" + version.id() + "' and its files?",
                 ButtonType.OK, ButtonType.CANCEL);
         confirm.setHeaderText("Delete Version");
         confirm.showAndWait();
@@ -876,7 +1080,7 @@ public final class LimecraftApp extends Application {
                     saveSettings();
                     applyVersionFilter();
                     versionsList.refresh();
-                    setStatus("Deleted custom version " + version.id(), 0);
+                    setStatus("Deleted " + kind + " version " + version.id(), 0);
                 });
             } catch (Exception ex) {
                 fail(ex);
@@ -915,6 +1119,39 @@ public final class LimecraftApp extends Application {
         }
         setStatus("Installing base version " + base.id() + " for custom copy...", 0.1);
         installService.installVersion(base, this::setStatus);
+    }
+
+    private boolean hasLaunchedVersion(VersionEntry version) {
+        if (version == null) {
+            return false;
+        }
+        Path instanceDir = gameDir.resolve("instances").resolve(safeFolderName(version.id()));
+        return Files.isDirectory(instanceDir);
+    }
+
+    private void openFabricModsFolder(VersionEntry version) {
+        if (!isFabricVersion(version)) {
+            setStatus("Mods folder is only available for Fabric versions.", 0);
+            return;
+        }
+        Path instanceDir = gameDir.resolve("instances").resolve(safeFolderName(version.id()));
+        if (!Files.isDirectory(instanceDir)) {
+            setStatus("Launch this Fabric version once before opening its mods folder.", 0);
+            return;
+        }
+        Path modsDir = instanceDir.resolve("mods");
+        io.submit(() -> {
+            try {
+                Files.createDirectories(modsDir);
+                if (!Desktop.isDesktopSupported()) {
+                    throw new IllegalStateException("Desktop integration is not supported on this system.");
+                }
+                Desktop.getDesktop().open(modsDir.toFile());
+                setStatus("Opened mods folder for " + version.id(), 0);
+            } catch (Exception ex) {
+                fail(ex);
+            }
+        });
     }
     private void setModeVisibility(VBox microsoftAuthBox, VBox offlineAuthBox, boolean microsoft) {
         microsoftAuthBox.setManaged(microsoft);
@@ -962,20 +1199,21 @@ public final class LimecraftApp extends Application {
             stream.filter(Files::isDirectory).forEach(dir -> {
                 String id = dir.getFileName().toString();
                 Path json = dir.resolve(id + ".json");
-                Path jar = dir.resolve(id + ".jar");
-                if (!Files.exists(json) || !Files.exists(jar)) {
+
+                if (!Files.exists(json)) {
                     return;
                 }
                 try {
                     JsonObject meta = JsonParser.parseString(Files.readString(json)).getAsJsonObject();
                     String type = meta.has("type") ? meta.get("type").getAsString() : "";
-                    if (!"custom".equalsIgnoreCase(type)) {
+                    boolean fabric = isFabricMetadata(meta);
+                    if (!"custom".equalsIgnoreCase(type) && !fabric) {
                         return;
                     }
                     String releaseTime = meta.has("releaseTime")
                             ? meta.get("releaseTime").getAsString()
                             : Instant.now().toString();
-                    custom.add(new VersionEntry(id, "custom", "", releaseTime));
+                    custom.add(new VersionEntry(id, fabric ? "fabric" : "custom", "", releaseTime));
                 } catch (Exception ignored) {
                 }
             });
@@ -985,6 +1223,30 @@ public final class LimecraftApp extends Application {
 
         custom.sort(Comparator.comparing(VersionEntry::releaseTime).reversed());
         return custom;
+    }
+
+    private boolean isFabricMetadata(JsonObject meta) {
+        if (meta == null) {
+            return false;
+        }
+        if (meta.has("type") && "fabric".equalsIgnoreCase(meta.get("type").getAsString())) {
+            return true;
+        }
+        if (!meta.has("libraries") || !meta.get("libraries").isJsonArray()) {
+            return false;
+        }
+        JsonArray libs = meta.getAsJsonArray("libraries");
+        for (int i = 0; i < libs.size(); i++) {
+            JsonObject lib = libs.get(i).getAsJsonObject();
+            if (!lib.has("name")) {
+                continue;
+            }
+            String name = lib.get("name").getAsString().toLowerCase(Locale.ROOT);
+            if (name.startsWith("net.fabricmc:fabric-loader:")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void applyServerVersionFilter() {
@@ -1286,16 +1548,34 @@ public final class LimecraftApp extends Application {
         }
         io.submit(() -> {
             try {
-                Path versionJson = gameDir.resolve("versions").resolve(selected.id()).resolve(selected.id() + ".json");
-                Path versionJar = gameDir.resolve("versions").resolve(selected.id()).resolve(selected.id() + ".jar");
-                if (!Files.exists(versionJson) || !Files.exists(versionJar)) {
+                Path versionDir = gameDir.resolve("versions").resolve(selected.id());
+                Path versionJson = versionDir.resolve(selected.id() + ".json");
+                Path versionJar = versionDir.resolve(selected.id() + ".jar");
+
+                if (!Files.exists(versionJson)) {
+                    if (selected.url() == null || selected.url().isBlank()) {
+                        throw new IllegalStateException("Version metadata is missing for " + selected.id());
+                    }
                     setStatus("Installing " + selected.id() + " before launch...", 0.15);
                     installService.installVersion(selected, this::setStatus);
                     setStatus("Installed " + selected.id(), 0.8);
-                    Platform.runLater(() -> versionsList.refresh());
-                    Platform.runLater(() -> versionsList.refresh());
                 }
+
                 JsonObject meta = JsonParser.parseString(Files.readString(versionJson)).getAsJsonObject();
+                if (!Files.exists(versionJar) && !meta.has("inheritsFrom")) {
+                    if (selected.url() == null || selected.url().isBlank()) {
+                        throw new IllegalStateException("Missing client jar for " + selected.id());
+                    }
+                    setStatus("Installing missing jar for " + selected.id() + "...", 0.25);
+                    installService.installVersion(selected, this::setStatus);
+                    meta = JsonParser.parseString(Files.readString(versionJson)).getAsJsonObject();
+                }
+                if (meta.has("inheritsFrom")) {
+                    setStatus("Checking inherited dependencies for " + selected.id() + "...", 0.55);
+                    installService.installMetadataDependencies(meta, this::setStatus);
+                    ensureInheritedDependenciesInstalled(meta);
+                }
+
                 MinecraftAccount accountToUse = null;
                 String offlineUsername = null;
                 if (MODE_MICROSOFT.equals(accountModeBox.getValue())) {
@@ -1312,6 +1592,7 @@ public final class LimecraftApp extends Application {
                     savedOfflineUsername = offlineUsername;
                     saveSettings();
                 }
+
                 setStatus("Launching " + selected.id() + "...", 0.9);
                 Process process = launchService.launch(
                         selected.id(),
@@ -1324,6 +1605,7 @@ public final class LimecraftApp extends Application {
                 );
                 currentGameProcess = process;
                 Platform.runLater(() -> {
+                    versionsList.refresh();
                     setGameRunning(true);
                     recordRecentLaunch(selected.id());
                 });
@@ -1342,7 +1624,6 @@ public final class LimecraftApp extends Application {
             }
         });
     }
-
     private void setStatus(String text, double value) {
         Platform.runLater(() -> {
             status.setText(text);
@@ -1403,6 +1684,46 @@ public final class LimecraftApp extends Application {
         setStatus("Minecraft process killed", 0);
     }
 
+    private String safeFolderName(String versionId) {
+        return versionId.replaceAll("[\\\\/:*?\"<>|]", "_");
+    }
+
+    private void ensureInheritedDependenciesInstalled(JsonObject meta) throws Exception {
+        ensureInheritedDependenciesInstalled(meta, new HashSet<>());
+    }
+
+    private void ensureInheritedDependenciesInstalled(JsonObject meta, Set<String> visiting) throws Exception {
+        if (meta == null || !meta.has("inheritsFrom")) {
+            return;
+        }
+        String parentId = meta.get("inheritsFrom").getAsString();
+        if (!visiting.add(parentId)) {
+            throw new IllegalStateException("Cyclic version inheritance detected at " + parentId);
+        }
+
+        Path parentJson = gameDir.resolve("versions").resolve(parentId).resolve(parentId + ".json");
+        Path parentJar = gameDir.resolve("versions").resolve(parentId).resolve(parentId + ".jar");
+        if (!Files.exists(parentJson)) {
+            VersionEntry parent = findVersionById(parentId);
+            if (parent == null || parent.url() == null || parent.url().isBlank()) {
+                throw new IllegalStateException("Missing inherited version metadata for " + parentId);
+            }
+            setStatus("Installing inherited base " + parentId + "...", 0.4);
+            installService.installVersion(parent, this::setStatus);
+        } else if (!Files.exists(parentJar)) {
+            VersionEntry parent = findVersionById(parentId);
+            if (parent != null && parent.url() != null && !parent.url().isBlank()) {
+                setStatus("Installing missing inherited jar/assets for " + parentId + "...", 0.45);
+                installService.installVersion(parent, this::setStatus);
+            }
+        }
+
+        JsonObject parentMeta = JsonParser.parseString(Files.readString(parentJson)).getAsJsonObject();
+        installService.installMetadataDependencies(parentMeta, this::setStatus);
+        ensureInheritedDependenciesInstalled(parentMeta, visiting);
+        visiting.remove(parentId);
+    }
+
     private void setGameRunning(boolean running) {
         for (Control control : controlsToDisableOnRun) {
             control.setDisable(running);
@@ -1416,8 +1737,25 @@ public final class LimecraftApp extends Application {
 
     private boolean isVersionInstalled(VersionEntry version) {
         Path versionDir = gameDir.resolve("versions").resolve(version.id());
-        return Files.exists(versionDir.resolve(version.id() + ".json"))
-                && Files.exists(versionDir.resolve(version.id() + ".jar"));
+        Path json = versionDir.resolve(version.id() + ".json");
+        if (!Files.exists(json)) {
+            return false;
+        }
+        Path jar = versionDir.resolve(version.id() + ".jar");
+        if (Files.exists(jar)) {
+            return true;
+        }
+        try {
+            JsonObject meta = JsonParser.parseString(Files.readString(json)).getAsJsonObject();
+            if (!meta.has("inheritsFrom")) {
+                return false;
+            }
+            String parent = meta.get("inheritsFrom").getAsString();
+            Path parentJar = gameDir.resolve("versions").resolve(parent).resolve(parent + ".jar");
+            return Files.exists(parentJar);
+        } catch (Exception ex) {
+            return false;
+        }
     }
     private void applyVersionFilter() {
         String query = searchField.getText() == null ? "" : searchField.getText().trim().toLowerCase(Locale.ROOT);
@@ -1586,6 +1924,13 @@ public final class LimecraftApp extends Application {
         launch(args);
     }
 }
+
+
+
+
+
+
+
 
 
 

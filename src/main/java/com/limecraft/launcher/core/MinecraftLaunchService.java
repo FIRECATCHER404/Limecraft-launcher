@@ -10,8 +10,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.jar.JarFile;
 import java.util.zip.ZipEntry;
@@ -25,57 +27,64 @@ public final class MinecraftLaunchService {
 
     public Process launch(String versionId, JsonObject versionMeta, MinecraftAccount account, String offlineUsername, String javaPath, String xmx, boolean includeLimecraftSuffix) throws Exception {
         String os = detectOs();
-        Path versionDir = gameDir.resolve("versions").resolve(versionId);
-        Path gameJar = versionDir.resolve(versionId + ".jar");
+        JsonObject effectiveMeta = resolveEffectiveMeta(versionId, versionMeta, new HashSet<>());
+        Path gameJar = resolveGameJar(versionId, versionMeta, new HashSet<>());
+        if (!Files.exists(gameJar)) {
+            throw new IllegalStateException("Missing client jar for " + versionId + " (or its parent version)");
+        }
+
         Path instanceDir = gameDir.resolve("instances").resolve(safeFolderName(versionId));
         Files.createDirectories(instanceDir);
 
         List<String> classpathEntries = new ArrayList<>();
-        JsonArray libs = versionMeta.getAsJsonArray("libraries");
+        JsonArray libs = effectiveMeta.has("libraries") && effectiveMeta.get("libraries").isJsonArray()
+                ? effectiveMeta.getAsJsonArray("libraries")
+                : new JsonArray();
+
         for (JsonElement libEl : libs) {
             JsonObject lib = libEl.getAsJsonObject();
-            if (!isLibraryAllowed(lib, os) || !lib.has("downloads")) {
+            if (!isLibraryAllowed(lib, os)) {
                 continue;
             }
-            JsonObject downloads = lib.getAsJsonObject("downloads");
-            if (downloads.has("artifact")) {
-                String rel = downloads.getAsJsonObject("artifact").get("path").getAsString();
-                Path p = gameDir.resolve("libraries").resolve(rel);
-                if (Files.exists(p)) {
-                    classpathEntries.add(p.toString());
-                }
+            Path p = resolveLibraryPath(lib);
+            if (p != null && Files.exists(p)) {
+                classpathEntries.add(p.toString());
             }
         }
         classpathEntries.add(gameJar.toString());
 
         Path nativesDir = gameDir.resolve("natives").resolve(versionId);
         Files.createDirectories(nativesDir);
-        extractNatives(versionMeta, nativesDir, os);
+        extractNatives(effectiveMeta, nativesDir, os);
 
-        Map<String, String> vars = buildVariables(versionMeta, account, offlineUsername, classpathEntries, nativesDir, instanceDir, versionId, includeLimecraftSuffix);
+        Map<String, String> vars = buildVariables(effectiveMeta, account, offlineUsername, classpathEntries, nativesDir, instanceDir, versionId, includeLimecraftSuffix);
         List<String> args = new ArrayList<>();
         args.add(javaPath == null || javaPath.isBlank() ? "java" : javaPath);
         args.add("-Xmx" + (xmx == null || xmx.isBlank() ? "4G" : xmx));
         args.add("-Djava.library.path=" + nativesDir);
-        String mainClass = versionMeta.get("mainClass").getAsString();
-        if (shouldUseLegacyDirectMain(versionMeta, gameJar)) {
+        String mainClass = effectiveMeta.get("mainClass").getAsString();
+        if (shouldUseLegacyDirectMain(effectiveMeta, gameJar)) {
             mainClass = "net.minecraft.client.Minecraft";
         }
 
-        if (versionMeta.has("arguments")) {
-            JsonObject arguments = versionMeta.getAsJsonObject("arguments");
-            addArgArray(arguments.getAsJsonArray("jvm"), args, vars, os);
+        if (effectiveMeta.has("arguments")) {
+            JsonObject arguments = effectiveMeta.getAsJsonObject("arguments");
+            if (arguments.has("jvm") && arguments.get("jvm").isJsonArray()) {
+                addArgArray(arguments.getAsJsonArray("jvm"), args, vars, os);
+            }
         }
 
         args.add("-cp");
         args.add(String.join(System.getProperty("path.separator"), classpathEntries));
         args.add(mainClass);
 
-        if (versionMeta.has("arguments")) {
-            JsonObject arguments = versionMeta.getAsJsonObject("arguments");
-            addArgArray(arguments.getAsJsonArray("game"), args, vars, os);
-        } else if (versionMeta.has("minecraftArguments")) {
-            String raw = versionMeta.get("minecraftArguments").getAsString();
+        if (effectiveMeta.has("arguments")) {
+            JsonObject arguments = effectiveMeta.getAsJsonObject("arguments");
+            if (arguments.has("game") && arguments.get("game").isJsonArray()) {
+                addArgArray(arguments.getAsJsonArray("game"), args, vars, os);
+            }
+        } else if (effectiveMeta.has("minecraftArguments")) {
+            String raw = effectiveMeta.get("minecraftArguments").getAsString();
             for (String tok : raw.split(" ")) {
                 args.add(replace(tok, vars));
             }
@@ -85,6 +94,120 @@ public final class MinecraftLaunchService {
         pb.directory(instanceDir.toFile());
         pb.redirectErrorStream(true);
         return pb.start();
+    }
+
+    private JsonObject resolveEffectiveMeta(String versionId, JsonObject meta, Set<String> visiting) throws IOException {
+        if (!visiting.add(versionId)) {
+            throw new IllegalStateException("Cyclic version inheritance detected at " + versionId);
+        }
+
+        JsonObject child = meta.deepCopy();
+        if (!child.has("inheritsFrom")) {
+            visiting.remove(versionId);
+            return child;
+        }
+
+        String parentId = child.get("inheritsFrom").getAsString();
+        JsonObject parentMeta = loadVersionMeta(parentId);
+        JsonObject parentResolved = resolveEffectiveMeta(parentId, parentMeta, visiting);
+
+        JsonObject merged = parentResolved.deepCopy();
+
+        JsonArray mergedLibraries = new JsonArray();
+        if (parentResolved.has("libraries") && parentResolved.get("libraries").isJsonArray()) {
+            for (JsonElement el : parentResolved.getAsJsonArray("libraries")) {
+                mergedLibraries.add(el);
+            }
+        }
+        if (child.has("libraries") && child.get("libraries").isJsonArray()) {
+            for (JsonElement el : child.getAsJsonArray("libraries")) {
+                mergedLibraries.add(el);
+            }
+        }
+
+        for (Map.Entry<String, JsonElement> entry : child.entrySet()) {
+            String key = entry.getKey();
+            if ("inheritsFrom".equals(key) || "libraries".equals(key)) {
+                continue;
+            }
+            if ("arguments".equals(key) && entry.getValue().isJsonObject()) {
+                JsonObject parentArgs = merged.has("arguments") && merged.get("arguments").isJsonObject()
+                        ? merged.getAsJsonObject("arguments")
+                        : null;
+                JsonObject childArgs = entry.getValue().getAsJsonObject();
+                merged.add("arguments", mergeArguments(parentArgs, childArgs));
+                continue;
+            }
+            merged.add(key, entry.getValue());
+        }
+        merged.add("libraries", mergedLibraries);
+
+        visiting.remove(versionId);
+        return merged;
+    }
+
+    private JsonObject mergeArguments(JsonObject parentArgs, JsonObject childArgs) {
+        JsonObject out = parentArgs == null ? new JsonObject() : parentArgs.deepCopy();
+        if (childArgs == null) {
+            return out;
+        }
+
+        mergeArgumentArray(out, parentArgs, childArgs, "jvm");
+        mergeArgumentArray(out, parentArgs, childArgs, "game");
+
+        for (Map.Entry<String, JsonElement> entry : childArgs.entrySet()) {
+            String key = entry.getKey();
+            if ("jvm".equals(key) || "game".equals(key)) {
+                continue;
+            }
+            out.add(key, entry.getValue());
+        }
+        return out;
+    }
+
+    private void mergeArgumentArray(JsonObject out, JsonObject parentArgs, JsonObject childArgs, String key) {
+        JsonArray merged = new JsonArray();
+        if (parentArgs != null && parentArgs.has(key) && parentArgs.get(key).isJsonArray()) {
+            for (JsonElement el : parentArgs.getAsJsonArray(key)) {
+                merged.add(el);
+            }
+        }
+        if (childArgs.has(key) && childArgs.get(key).isJsonArray()) {
+            for (JsonElement el : childArgs.getAsJsonArray(key)) {
+                merged.add(el);
+            }
+        }
+        if (!merged.isEmpty()) {
+            out.add(key, merged);
+        } else if (out.has(key)) {
+            out.remove(key);
+        }
+    }
+
+    private JsonObject loadVersionMeta(String versionId) throws IOException {
+        Path jsonPath = gameDir.resolve("versions").resolve(versionId).resolve(versionId + ".json");
+        if (!Files.exists(jsonPath)) {
+            throw new IllegalStateException("Missing inherited version metadata for " + versionId);
+        }
+        return com.google.gson.JsonParser.parseString(Files.readString(jsonPath)).getAsJsonObject();
+    }
+
+    private Path resolveGameJar(String versionId, JsonObject meta, Set<String> visiting) throws IOException {
+        if (!visiting.add(versionId)) {
+            throw new IllegalStateException("Cyclic version inheritance detected at " + versionId);
+        }
+
+        Path candidate = gameDir.resolve("versions").resolve(versionId).resolve(versionId + ".jar");
+        if (Files.exists(candidate) || !meta.has("inheritsFrom")) {
+            visiting.remove(versionId);
+            return candidate;
+        }
+
+        String parentId = meta.get("inheritsFrom").getAsString();
+        JsonObject parentMeta = loadVersionMeta(parentId);
+        Path parentJar = resolveGameJar(parentId, parentMeta, visiting);
+        visiting.remove(versionId);
+        return parentJar;
     }
 
     private void addArgArray(JsonArray array, List<String> out, Map<String, String> vars, String os) {
@@ -119,7 +242,6 @@ public final class MinecraftLaunchService {
                 matches = osObj.has("name") && os.equals(osObj.get("name").getAsString());
             }
             if (matches && rule.has("features")) {
-                // Launcher feature flags are unsupported here; keep them disabled by default.
                 matches = false;
             }
             if (matches) {
@@ -136,8 +258,50 @@ public final class MinecraftLaunchService {
         return passesRules(lib.getAsJsonArray("rules"), os);
     }
 
+    private Path resolveLibraryPath(JsonObject lib) {
+        if (lib.has("downloads") && lib.getAsJsonObject("downloads").has("artifact")) {
+            String rel = lib.getAsJsonObject("downloads").getAsJsonObject("artifact").get("path").getAsString();
+            return gameDir.resolve("libraries").resolve(rel);
+        }
+        if (!lib.has("name")) {
+            return null;
+        }
+        return gameDir.resolve("libraries").resolve(toMavenPath(lib.get("name").getAsString()));
+    }
+
+    private String toMavenPath(String notation) {
+        String ext = "jar";
+        String baseNotation = notation;
+        int at = notation.indexOf('@');
+        if (at >= 0) {
+            baseNotation = notation.substring(0, at);
+            ext = notation.substring(at + 1);
+        }
+
+        String[] parts = baseNotation.split(":");
+        if (parts.length < 3) {
+            throw new IllegalArgumentException("Invalid library notation: " + notation);
+        }
+
+        String group = parts[0].replace('.', '/');
+        String artifact = parts[1];
+        String version = parts[2];
+        String classifier = parts.length >= 4 ? parts[3] : null;
+
+        StringBuilder file = new StringBuilder();
+        file.append(artifact).append('-').append(version);
+        if (classifier != null && !classifier.isBlank()) {
+            file.append('-').append(classifier);
+        }
+        file.append('.').append(ext);
+        return group + "/" + artifact + "/" + version + "/" + file;
+    }
+
     private void extractNatives(JsonObject meta, Path nativesDir, String os) throws IOException {
-        JsonArray libs = meta.getAsJsonArray("libraries");
+        JsonArray libs = meta.has("libraries") && meta.get("libraries").isJsonArray()
+                ? meta.getAsJsonArray("libraries")
+                : new JsonArray();
+
         String key = switch (os) {
             case "windows" -> "natives-windows";
             case "osx" -> "natives-macos";
@@ -238,6 +402,7 @@ public final class MinecraftLaunchService {
             return false;
         }
     }
+
     private String replace(String input, Map<String, String> vars) {
         String out = input;
         for (var e : vars.entrySet()) {
@@ -268,10 +433,3 @@ public final class MinecraftLaunchService {
         return "linux";
     }
 }
-
-
-
-
-
-
-

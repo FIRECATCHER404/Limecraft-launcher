@@ -78,6 +78,18 @@ public final class MinecraftInstallService {
         return meta;
     }
 
+    public void installMetadataDependencies(JsonObject versionMeta, ProgressListener listener) throws IOException {
+        if (versionMeta.has("libraries") && versionMeta.get("libraries").isJsonArray()) {
+            listener.onProgress("Downloading libraries", 0.25);
+            downloadLibraries(versionMeta, listener);
+        }
+        if (versionMeta.has("assetIndex") && versionMeta.get("assetIndex").isJsonObject()) {
+            listener.onProgress("Downloading assets", 0.7);
+            downloadAssets(versionMeta, listener);
+        }
+        listener.onProgress("Install complete", 1.0);
+    }
+
     private void downloadLibraries(JsonObject versionMeta, ProgressListener listener) throws IOException {
         JsonArray libs = versionMeta.getAsJsonArray("libraries");
         int total = libs.size();
@@ -91,17 +103,13 @@ public final class MinecraftInstallService {
                 continue;
             }
 
-            if (!lib.has("downloads")) {
-                continue;
+            LibraryArtifact artifact = resolveMainArtifact(lib);
+            if (artifact != null) {
+                downloader.downloadTo(artifact.url(), gameDir.resolve("libraries").resolve(artifact.path()));
             }
-            JsonObject downloads = lib.getAsJsonObject("downloads");
-            if (downloads.has("artifact")) {
-                JsonObject artifact = downloads.getAsJsonObject("artifact");
-                String path = artifact.get("path").getAsString();
-                String url = artifact.get("url").getAsString();
-                downloader.downloadTo(url, gameDir.resolve("libraries").resolve(path));
-            }
-            if (downloads.has("classifiers")) {
+
+            if (lib.has("downloads") && lib.getAsJsonObject("downloads").has("classifiers")) {
+                JsonObject downloads = lib.getAsJsonObject("downloads");
                 JsonObject classifiers = downloads.getAsJsonObject("classifiers");
                 String key = switch (os) {
                     case "windows" -> "natives-windows";
@@ -119,6 +127,49 @@ public final class MinecraftInstallService {
             }
             listener.onProgress("Libraries: " + i + "/" + total, 0.25 + (0.4 * ((double) i / total)));
         }
+    }
+
+    private LibraryArtifact resolveMainArtifact(JsonObject lib) {
+        if (lib.has("downloads") && lib.getAsJsonObject("downloads").has("artifact")) {
+            JsonObject artifact = lib.getAsJsonObject("downloads").getAsJsonObject("artifact");
+            return new LibraryArtifact(artifact.get("path").getAsString(), artifact.get("url").getAsString());
+        }
+        if (!lib.has("name")) {
+            return null;
+        }
+        String path = toMavenPath(lib.get("name").getAsString());
+        String base = lib.has("url") ? lib.get("url").getAsString() : "https://libraries.minecraft.net/";
+        if (!base.endsWith("/")) {
+            base += "/";
+        }
+        return new LibraryArtifact(path, base + path);
+    }
+
+    private String toMavenPath(String notation) {
+        String ext = "jar";
+        String baseNotation = notation;
+        int at = notation.indexOf('@');
+        if (at >= 0) {
+            baseNotation = notation.substring(0, at);
+            ext = notation.substring(at + 1);
+        }
+
+        String[] parts = baseNotation.split(":");
+        if (parts.length < 3) {
+            throw new IllegalArgumentException("Invalid library notation: " + notation);
+        }
+        String group = parts[0].replace('.', '/');
+        String artifact = parts[1];
+        String version = parts[2];
+        String classifier = parts.length >= 4 ? parts[3] : null;
+
+        StringBuilder file = new StringBuilder();
+        file.append(artifact).append('-').append(version);
+        if (classifier != null && !classifier.isBlank()) {
+            file.append('-').append(classifier);
+        }
+        file.append('.').append(ext);
+        return group + "/" + artifact + "/" + version + "/" + file;
     }
 
     private void downloadAssets(JsonObject versionMeta, ProgressListener listener) throws IOException {
@@ -184,4 +235,6 @@ public final class MinecraftInstallService {
     public interface ProgressListener {
         void onProgress(String message, double progress);
     }
+
+    private record LibraryArtifact(String path, String url) {}
 }
