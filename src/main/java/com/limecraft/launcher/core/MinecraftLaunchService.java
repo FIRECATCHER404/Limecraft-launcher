@@ -23,7 +23,7 @@ public final class MinecraftLaunchService {
         this.gameDir = gameDir;
     }
 
-    public Process launch(String versionId, JsonObject versionMeta, MinecraftAccount account, String offlineUsername, String javaPath, String xmx) throws Exception {
+    public Process launch(String versionId, JsonObject versionMeta, MinecraftAccount account, String offlineUsername, String javaPath, String xmx, boolean includeLimecraftSuffix) throws Exception {
         String os = detectOs();
         Path versionDir = gameDir.resolve("versions").resolve(versionId);
         Path gameJar = versionDir.resolve(versionId + ".jar");
@@ -52,7 +52,7 @@ public final class MinecraftLaunchService {
         Files.createDirectories(nativesDir);
         extractNatives(versionMeta, nativesDir, os);
 
-        Map<String, String> vars = buildVariables(versionMeta, account, offlineUsername, classpathEntries, nativesDir, instanceDir, versionId);
+        Map<String, String> vars = buildVariables(versionMeta, account, offlineUsername, classpathEntries, nativesDir, instanceDir, versionId, includeLimecraftSuffix);
         List<String> args = new ArrayList<>();
         args.add(javaPath == null || javaPath.isBlank() ? "java" : javaPath);
         args.add("-Xmx" + (xmx == null || xmx.isBlank() ? "4G" : xmx));
@@ -181,7 +181,7 @@ public final class MinecraftLaunchService {
         }
     }
 
-    private Map<String, String> buildVariables(JsonObject meta, MinecraftAccount account, String offlineUsername, List<String> cp, Path nativesDir, Path instanceDir, String versionId) {
+    private Map<String, String> buildVariables(JsonObject meta, MinecraftAccount account, String offlineUsername, List<String> cp, Path nativesDir, Path instanceDir, String versionId, boolean includeLimecraftSuffix) {
         String username = account != null
                 ? account.username()
                 : (offlineUsername == null || offlineUsername.isBlank() ? "Player" : offlineUsername);
@@ -203,7 +203,7 @@ public final class MinecraftLaunchService {
         vars.put("auth_xuid", xuid);
         vars.put("clientid", clientId);
         vars.put("user_type", account != null ? "msa" : "legacy");
-        vars.put("version_type", buildVersionType(meta));
+        vars.put("version_type", buildVersionType(meta, includeLimecraftSuffix));
         vars.put("natives_directory", nativesDir.toAbsolutePath().toString());
         vars.put("launcher_name", "Limecraft");
         vars.put("launcher_version", "1.0.0");
@@ -246,8 +246,11 @@ public final class MinecraftLaunchService {
         return out;
     }
 
-    private String buildVersionType(JsonObject meta) {
+    private String buildVersionType(JsonObject meta, boolean includeLimecraftSuffix) {
         String type = meta.has("type") ? meta.get("type").getAsString() : "custom";
+        if (!includeLimecraftSuffix) {
+            return type;
+        }
         if ("release".equalsIgnoreCase(type)) {
             return "Limecraft";
         }
@@ -265,6 +268,8 @@ public final class MinecraftLaunchService {
         return "linux";
     }
 }
+
+
 
 
 

@@ -15,6 +15,7 @@ import javafx.application.Platform;
 import javafx.collections.FXCollections;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
+import javafx.scene.Node;
 import javafx.scene.Scene;
 import javafx.scene.control.*;
 import javafx.scene.image.Image;
@@ -27,8 +28,10 @@ import javafx.stage.Stage;
 
 import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
+import java.io.BufferedWriter;
 import java.io.File;
 import java.io.InputStreamReader;
+import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -50,6 +53,7 @@ public final class LimecraftApp extends Application {
     private static final String KEY_OFFLINE_USERNAME = "offline_username";
     private static final String KEY_ACCOUNT_MODE = "account_mode";
     private static final String KEY_RECENT_VERSIONS = "recent_versions";
+    private static final String KEY_BRANDING_SUFFIX = "include_limecraft_suffix";
     private static final String MICROSOFT_CLIENT_ID = "ba5cdd7c-bc36-4702-9613-35f14f83e52c";
 
     private final ExecutorService io = Executors.newFixedThreadPool(4);
@@ -72,18 +76,40 @@ public final class LimecraftApp extends Application {
     private TextField offlineUsernameField;
     private TextField searchField;
     private CheckBox experimentToggle;
+    private CheckBox limecraftSuffixToggle;
     private Button signInButton;
     private Button detectJavaButton;
     private Button addVersionButton;
     private Button launchButton;
     private Label selectedVersionLabel;
     private ComboBox<String> recentBox;
-    private Process currentGameProcess;
+    private ListView<VersionEntry> serverVersionsList;
+    private TextField serverSearchField;
+    private CheckBox serverExperimentalToggle;
+    private TextField serverJavaPathField;
+    private TextField serverRamField;
+    private TextField serverPortField;
+    private TextField serverMotdField;
+    private TextField serverMaxPlayersField;
+    private CheckBox serverOnlineModeToggle;
+    private CheckBox serverPvpToggle;
+    private CheckBox serverCommandBlocksToggle;
+    private CheckBox serverNoguiToggle;
+    private Button serverLaunchButton;
+    private Label serverSelectedVersionLabel;
+    private ProgressBar serverProgress;
+    private TextArea serverLogOutput;
+    private TextField serverCommandField;
+    private Button serverSendButton;
+    private BufferedWriter serverCommandWriter;
+    private Process currentServerProcess;
+    private List<Control> serverControlsToDisableOnRun = List.of();    private Process currentGameProcess;
     private List<Control> controlsToDisableOnRun = List.of();
     private List<VersionEntry> allVersions = List.of();
     private String lastSelectedVersionId;
     private String savedOfflineUsername = "Player";
     private String savedAccountMode = MODE_MICROSOFT;
+    private boolean includeLimecraftSuffix = true;
     private final List<String> recentVersions = new ArrayList<>();
 
     @Override
@@ -189,6 +215,13 @@ public final class LimecraftApp extends Application {
         experimentToggle.setSelected(true);
         experimentToggle.selectedProperty().addListener((obs, oldVal, newVal) -> applyVersionFilter());
 
+        limecraftSuffixToggle = new CheckBox("Add Limecraft version suffix");
+        limecraftSuffixToggle.setSelected(includeLimecraftSuffix);
+        limecraftSuffixToggle.selectedProperty().addListener((obs, oldVal, newVal) -> {
+            includeLimecraftSuffix = Boolean.TRUE.equals(newVal);
+            saveSettings();
+        });
+
         signInButton = new Button("Sign In (Microsoft)");
         signInButton.setOnAction(e -> signIn());
 
@@ -212,7 +245,7 @@ public final class LimecraftApp extends Application {
             }
         });
 
-        VBox actionButtons = new VBox(8, launchButton, selectedVersionLabel, labeledNode("Recent", recentBox));
+        VBox actionButtons = new VBox(8, launchButton, selectedVersionLabel, labeledNode("Recent", recentBox), limecraftSuffixToggle);
         launchButton.setMaxWidth(Double.MAX_VALUE);
         signInButton.setMaxWidth(Double.MAX_VALUE);
 
@@ -272,16 +305,25 @@ public final class LimecraftApp extends Application {
                 detectJavaButton,
                 addVersionButton,
                 recentBox,
+                limecraftSuffixToggle,
                 ramField,
                 versionsList
         );
 
-        VBox root = new VBox(12, rootRow, progress, logOutput);
-        root.setPadding(new Insets(16));
+                VBox clientRoot = new VBox(12, rootRow, progress, logOutput);
+        clientRoot.setPadding(new Insets(16));
         VBox.setVgrow(rootRow, Priority.ALWAYS);
         VBox.setVgrow(logOutput, Priority.SOMETIMES);
 
-        Scene scene = new Scene(root, 980, 640);
+        Tab clientTab = new Tab("Client", clientRoot);
+        clientTab.setClosable(false);
+        Tab serverTab = new Tab("Server", createServerTab());
+        serverTab.setClosable(false);
+
+        TabPane tabPane = new TabPane(clientTab, serverTab);
+        tabPane.setTabClosingPolicy(TabPane.TabClosingPolicy.UNAVAILABLE);
+
+        Scene scene = new Scene(tabPane, 980, 640);
         scene.getStylesheets().add(getClass().getResource("/limecraft.css").toExternalForm());
 
         stage.setTitle("Limecraft");
@@ -307,6 +349,16 @@ public final class LimecraftApp extends Application {
         return box;
     }
 
+    private VBox labeledNode(String label, Node node) {
+        Label l = new Label(label);
+        if (node instanceof Region region) {
+            region.setMaxWidth(Double.MAX_VALUE);
+        }
+        VBox box = new VBox(4, l, node);
+        box.setAlignment(Pos.CENTER_LEFT);
+        box.setMaxWidth(Double.MAX_VALUE);
+        return box;
+    }
     private VBox javaPathNode() {
         Label label = new Label("Java Path");
         javaPathField.setMaxWidth(Double.MAX_VALUE);
@@ -317,6 +369,151 @@ public final class LimecraftApp extends Application {
         box.setAlignment(Pos.CENTER_LEFT);
         box.setMaxWidth(Double.MAX_VALUE);
         return box;
+    }
+
+    private VBox createServerTab() {
+        serverVersionsList = new ListView<>();
+        serverVersionsList.setMaxSize(Double.MAX_VALUE, Double.MAX_VALUE);
+        serverVersionsList.setCellFactory(list -> new ListCell<>() {
+            private final Label text = new Label();
+            private final Region spacer = new Region();
+            private final Region dot = new Region();
+            private final HBox row = new HBox(8, text, spacer, dot);
+
+            {
+                HBox.setHgrow(spacer, Priority.ALWAYS);
+                row.setAlignment(Pos.CENTER_LEFT);
+                dot.getStyleClass().add("installed-dot");
+            }
+
+            @Override
+            protected void updateItem(VersionEntry item, boolean empty) {
+                super.updateItem(item, empty);
+                if (empty || item == null) {
+                    setText(null);
+                    setGraphic(null);
+                    return;
+                }
+                text.setText(item.toString());
+                boolean installed = isServerInstalled(item);
+                if (installed) {
+                    dot.getStyleClass().remove("installed-dot-off");
+                } else if (!dot.getStyleClass().contains("installed-dot-off")) {
+                    dot.getStyleClass().add("installed-dot-off");
+                }
+                setText(null);
+                setGraphic(row);
+            }
+        });
+
+        serverSearchField = new TextField();
+        serverSearchField.setPromptText("Search a version...");
+        serverSearchField.getStyleClass().add("search-field");
+        serverSearchField.textProperty().addListener((obs, oldVal, newVal) -> applyServerVersionFilter());
+
+        serverExperimentalToggle = new CheckBox("Show Experimental");
+        serverExperimentalToggle.setSelected(true);
+        serverExperimentalToggle.selectedProperty().addListener((obs, oldVal, newVal) -> applyServerVersionFilter());
+
+        serverJavaPathField = new TextField("java");
+        Button useClientJavaButton = new Button("Use Client Java");
+        useClientJavaButton.setOnAction(e -> serverJavaPathField.setText(javaPathField.getText().trim()));
+        HBox serverJavaRow = new HBox(8, serverJavaPathField, useClientJavaButton);
+        HBox.setHgrow(serverJavaPathField, Priority.ALWAYS);
+
+        serverRamField = new TextField("2G");
+        serverPortField = new TextField("25565");
+        serverMotdField = new TextField("A Limecraft Server");
+        serverMaxPlayersField = new TextField("20");
+        serverOnlineModeToggle = new CheckBox("Online Mode");
+        serverOnlineModeToggle.setSelected(true);
+        serverPvpToggle = new CheckBox("PVP");
+        serverPvpToggle.setSelected(true);
+        serverCommandBlocksToggle = new CheckBox("Enable Command Blocks");
+        serverCommandBlocksToggle.setSelected(false);
+        serverNoguiToggle = new CheckBox("No GUI");
+        serverNoguiToggle.setSelected(true);
+
+        serverLaunchButton = new Button("Launch");
+        serverLaunchButton.getStyleClass().add("launch-button");
+        serverLaunchButton.setMaxWidth(Double.MAX_VALUE);
+        serverLaunchButton.setOnAction(e -> launchSelectedServer());
+        serverSelectedVersionLabel = new Label("Selected: none");
+        serverSelectedVersionLabel.getStyleClass().add("selected-version");
+
+        VBox left = new VBox(12,
+                title("Limecraft"),
+                labeledNode("Search Versions", serverSearchField),
+                serverExperimentalToggle,
+                labeledNode("Java Path", serverJavaRow),
+                labeledNode("Max Memory (-Xmx)", serverRamField),
+                labeledNode("Server Port", serverPortField),
+                labeledNode("MOTD", serverMotdField),
+                labeledNode("Max Players", serverMaxPlayersField),
+                serverOnlineModeToggle,
+                serverPvpToggle,
+                serverCommandBlocksToggle,
+                serverNoguiToggle,
+                serverLaunchButton,
+                serverSelectedVersionLabel
+        );
+        left.setPrefWidth(340);
+        left.setMinWidth(320);
+        left.setMaxWidth(420);
+
+        Label versionsLabel = new Label("Minecraft Versions");
+        VBox right = new VBox(8, versionsLabel, serverVersionsList);
+        HBox.setHgrow(right, Priority.ALWAYS);
+        VBox.setVgrow(serverVersionsList, Priority.ALWAYS);
+        right.setMaxWidth(Double.MAX_VALUE);
+
+        HBox row = new HBox(18, left, right);
+
+        serverProgress = new ProgressBar(0);
+        serverProgress.setMaxWidth(Double.MAX_VALUE);
+        serverLogOutput = new TextArea();
+        serverLogOutput.setEditable(false);
+        serverLogOutput.setWrapText(true);
+        serverLogOutput.setPromptText("Server log output will appear here...");
+        serverLogOutput.getStyleClass().add("console-log");
+
+        serverCommandField = new TextField();
+        serverCommandField.setPromptText("Type server command...");
+        serverCommandField.setDisable(true);
+        serverCommandField.setOnAction(e -> sendServerCommand());
+
+        serverSendButton = new Button("Send");
+        serverSendButton.setDisable(true);
+        serverSendButton.setOnAction(e -> sendServerCommand());
+
+        HBox serverCommandRow = new HBox(8, serverCommandField, serverSendButton);
+        HBox.setHgrow(serverCommandField, Priority.ALWAYS);
+
+        serverVersionsList.getSelectionModel().selectedItemProperty().addListener((obs, oldVal, newVal) -> {
+            serverSelectedVersionLabel.setText(newVal == null ? "Selected: none" : "Selected: " + newVal.id());
+        });
+
+        serverControlsToDisableOnRun = List.of(
+                serverSearchField,
+                serverExperimentalToggle,
+                serverJavaPathField,
+                useClientJavaButton,
+                serverRamField,
+                serverPortField,
+                serverMotdField,
+                serverMaxPlayersField,
+                serverOnlineModeToggle,
+                serverPvpToggle,
+                serverCommandBlocksToggle,
+                serverNoguiToggle,
+                serverVersionsList
+        );
+
+        VBox root = new VBox(12, row, serverProgress, serverLogOutput, serverCommandRow);
+        root.setPadding(new Insets(16));
+        VBox.setVgrow(row, Priority.ALWAYS);
+        VBox.setVgrow(serverLogOutput, Priority.SOMETIMES);
+        return root;
     }
 
     private void openJavaDetector() {
@@ -745,6 +942,7 @@ public final class LimecraftApp extends Application {
                     allVersions = combined;
                     versionsList.refresh();
                     applyVersionFilter();
+                    applyServerVersionFilter();
                     setStatus("Loaded " + official.size() + " official + " + custom.size() + " custom versions", 0);
                 });
             } catch (Exception ex) {
@@ -788,6 +986,239 @@ public final class LimecraftApp extends Application {
         custom.sort(Comparator.comparing(VersionEntry::releaseTime).reversed());
         return custom;
     }
+
+    private void applyServerVersionFilter() {
+        if (serverVersionsList == null) {
+            return;
+        }
+        String query = serverSearchField == null || serverSearchField.getText() == null
+                ? ""
+                : serverSearchField.getText().trim().toLowerCase(Locale.ROOT);
+        boolean includeExperimental = serverExperimentalToggle == null || serverExperimentalToggle.isSelected();
+
+        List<VersionEntry> filtered = new ArrayList<>();
+        for (VersionEntry v : allVersions) {
+            boolean isExperimental = "experiment".equalsIgnoreCase(v.type()) || "pending".equalsIgnoreCase(v.type());
+            if (!includeExperimental && isExperimental) {
+                continue;
+            }
+            if (query.isEmpty()) {
+                filtered.add(v);
+                continue;
+            }
+            String haystack = (v.id() + " " + v.displayType() + " " + v.releaseTime()).toLowerCase(Locale.ROOT);
+            if (haystack.contains(query)) {
+                filtered.add(v);
+            }
+        }
+
+        serverVersionsList.setItems(FXCollections.observableArrayList(filtered));
+        if (!filtered.isEmpty() && serverVersionsList.getSelectionModel().getSelectedItem() == null) {
+            serverVersionsList.getSelectionModel().select(0);
+        }
+    }
+
+    private boolean isServerInstalled(VersionEntry version) {
+        Path serverJar = gameDir.resolve("servers").resolve(version.id()).resolve("server.jar");
+        return Files.exists(serverJar);
+    }
+
+    private void launchSelectedServer() {
+        if (isServerRunning()) {
+            killRunningServer();
+            return;
+        }
+        VersionEntry selected = serverVersionsList.getSelectionModel().getSelectedItem();
+        if (selected == null) {
+            appendServerLog("[Limecraft] Select a server version first");
+            return;
+        }
+
+        io.submit(() -> {
+            try {
+                Path serverDir = gameDir.resolve("servers").resolve(selected.id());
+                Path serverJar = ensureServerInstalled(selected, serverDir);
+                writeServerFiles(serverDir);
+
+                List<String> args = new ArrayList<>();
+                String javaPath = serverJavaPathField.getText() == null || serverJavaPathField.getText().trim().isBlank()
+                        ? "java"
+                        : serverJavaPathField.getText().trim();
+                String xmx = serverRamField.getText() == null || serverRamField.getText().trim().isBlank()
+                        ? "2G"
+                        : serverRamField.getText().trim();
+                args.add(javaPath);
+                args.add("-Xmx" + xmx);
+                args.add("-jar");
+                args.add(serverJar.getFileName().toString());
+                if (serverNoguiToggle.isSelected()) {
+                    args.add("nogui");
+                }
+
+                ProcessBuilder pb = new ProcessBuilder(args);
+                pb.directory(serverDir.toFile());
+                pb.redirectErrorStream(true);
+                Process process = pb.start();
+                currentServerProcess = process;
+                serverCommandWriter = new BufferedWriter(new OutputStreamWriter(process.getOutputStream(), StandardCharsets.UTF_8));
+                Platform.runLater(() -> setServerRunning(true));
+
+                process.onExit().thenRun(() -> {
+                    if (currentServerProcess == process) {
+                        currentServerProcess = null;
+                        serverCommandWriter = null;
+                        appendServerLog("[Limecraft] Server closed");
+                        Platform.runLater(() -> setServerRunning(false));
+                    }
+                });
+
+                streamServerLog(process);
+                appendServerLog("[Limecraft] Server launched");
+            } catch (Exception ex) {
+                fail(ex);
+                Platform.runLater(() -> setServerRunning(false));
+            }
+        });
+    }
+
+    private Path ensureServerInstalled(VersionEntry version, Path serverDir) throws Exception {
+        Files.createDirectories(serverDir);
+        Path serverJar = serverDir.resolve("server.jar");
+        if (Files.exists(serverJar)) {
+            return serverJar;
+        }
+
+        appendServerLog("[Limecraft] Downloading server for " + version.id() + "...");
+        JsonObject meta = http.getJson(version.url());
+        if (!meta.has("downloads") || !meta.getAsJsonObject("downloads").has("server")) {
+            throw new IllegalStateException("Version " + version.id() + " has no dedicated server download.");
+        }
+        String serverUrl = meta.getAsJsonObject("downloads").getAsJsonObject("server").get("url").getAsString();
+
+        okhttp3.Request request = new okhttp3.Request.Builder().url(serverUrl).get().build();
+        try (okhttp3.Response response = http.raw().newCall(request).execute()) {
+            if (!response.isSuccessful() || response.body() == null) {
+                throw new IllegalStateException("Failed to download server jar: HTTP " + response.code());
+            }
+            Files.write(serverJar, response.body().bytes());
+        }
+        appendServerLog("[Limecraft] Server download complete");
+        return serverJar;
+    }
+
+    private void writeServerFiles(Path serverDir) throws Exception {
+        Files.createDirectories(serverDir);
+        Files.writeString(serverDir.resolve("eula.txt"), "eula=true" + System.lineSeparator());
+
+        List<String> lines = new ArrayList<>();
+        lines.add("server-port=" + sanitizeInt(serverPortField.getText(), 25565));
+        lines.add("motd=" + sanitizeText(serverMotdField.getText(), "A Limecraft Server"));
+        lines.add("max-players=" + sanitizeInt(serverMaxPlayersField.getText(), 20));
+        lines.add("online-mode=" + serverOnlineModeToggle.isSelected());
+        lines.add("pvp=" + serverPvpToggle.isSelected());
+        lines.add("enable-command-block=" + serverCommandBlocksToggle.isSelected());
+        Files.write(serverDir.resolve("server.properties"), lines, StandardCharsets.UTF_8);
+    }
+
+    private String sanitizeText(String text, String fallback) {
+        if (text == null || text.trim().isBlank()) {
+            return fallback;
+        }
+        return text.trim();
+    }
+
+    private int sanitizeInt(String text, int fallback) {
+        try {
+            return Integer.parseInt(text.trim());
+        } catch (Exception ex) {
+            return fallback;
+        }
+    }
+
+    private void streamServerLog(Process process) {
+        io.submit(() -> {
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    appendServerLog(line);
+                }
+            } catch (Exception ex) {
+                appendServerLog("[Limecraft] Failed to read server log: " + ex.getMessage());
+            }
+        });
+    }
+
+    private boolean isServerRunning() {
+        return currentServerProcess != null && currentServerProcess.isAlive();
+    }
+
+    private void killRunningServer() {
+        Process process = currentServerProcess;
+        if (process == null) {
+            setServerRunning(false);
+            return;
+        }
+        appendServerLog("[Limecraft] Force-killing server process...");
+        currentServerProcess = null;
+        serverCommandWriter = null;
+        process.destroyForcibly();
+        setServerRunning(false);
+    }
+
+    private void setServerRunning(boolean running) {
+        for (Control control : serverControlsToDisableOnRun) {
+            control.setDisable(running);
+        }
+        if (serverCommandField != null) {
+            serverCommandField.setDisable(!running);
+        }
+        if (serverSendButton != null) {
+            serverSendButton.setDisable(!running);
+        }
+        serverLaunchButton.setText(running ? "Kill" : "Launch");
+        serverLaunchButton.getStyleClass().remove("launch-button-kill");
+        if (running) {
+            serverLaunchButton.getStyleClass().add("launch-button-kill");
+        }
+    }
+
+    private void sendServerCommand() {
+        String command = serverCommandField == null ? "" : serverCommandField.getText();
+        if (command == null || command.trim().isBlank()) {
+            return;
+        }
+        if (!isServerRunning() || serverCommandWriter == null) {
+            appendServerLog("[Limecraft] Server is not running.");
+            return;
+        }
+        String trimmed = command.trim();
+        io.submit(() -> {
+            try {
+                synchronized (this) {
+                    serverCommandWriter.write(trimmed);
+                    serverCommandWriter.newLine();
+                    serverCommandWriter.flush();
+                }
+                appendServerLog("> " + trimmed);
+            } catch (Exception ex) {
+                appendServerLog("[Limecraft] Failed to send command: " + ex.getMessage());
+            }
+        });
+        serverCommandField.clear();
+    }
+
+    private void appendServerLog(String line) {
+        Platform.runLater(() -> {
+            if (serverLogOutput != null) {
+                serverLogOutput.appendText(line + System.lineSeparator());
+                serverLogOutput.positionCaret(serverLogOutput.getLength());
+            }
+            if (serverProgress != null && line.contains("Downloading")) {
+                serverProgress.setProgress(0.5);
+            }
+        });
+    }
+
     private void signIn() {
         if (!MODE_MICROSOFT.equals(accountModeBox.getValue())) {
             setStatus("Switch Account Mode to Microsoft to sign in.", 0);
@@ -888,7 +1319,8 @@ public final class LimecraftApp extends Application {
                         accountToUse,
                         offlineUsername,
                         javaPathField.getText().trim(),
-                        ramField.getText().trim()
+                        ramField.getText().trim(),
+                        includeLimecraftSuffix
                 );
                 currentGameProcess = process;
                 Platform.runLater(() -> {
@@ -1100,6 +1532,10 @@ public final class LimecraftApp extends Application {
                     }
                 }
             }
+            String suffixSetting = props.getProperty(KEY_BRANDING_SUFFIX);
+            if (suffixSetting != null && !suffixSetting.isBlank()) {
+                includeLimecraftSuffix = Boolean.parseBoolean(suffixSetting);
+            }
         } catch (Exception ex) {
             System.err.println("[Limecraft] Failed to load settings: " + ex.getMessage());
         }
@@ -1125,6 +1561,7 @@ public final class LimecraftApp extends Application {
             if (!recentVersions.isEmpty()) {
                 props.setProperty(KEY_RECENT_VERSIONS, String.join("|", recentVersions));
             }
+            props.setProperty(KEY_BRANDING_SUFFIX, String.valueOf(includeLimecraftSuffix));
             try (var out = Files.newOutputStream(file)) {
                 props.store(out, "Limecraft launcher settings");
             }
@@ -1136,6 +1573,12 @@ public final class LimecraftApp extends Application {
     @Override
     public void stop() {
         saveSettings();
+        if (isGameRunning()) {
+            killRunningGame();
+        }
+        if (isServerRunning()) {
+            killRunningServer();
+        }
         io.shutdownNow();
     }
 
@@ -1143,6 +1586,34 @@ public final class LimecraftApp extends Application {
         launch(args);
     }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
