@@ -22,3 +22,7 @@ Recently launched
 Right click menus for Base versions and custom versions
 <img width="274" height="40" alt="image" src="https://github.com/user-attachments/assets/64e82c16-76dd-4a0c-9f65-df9f599ec890" />
 <img width="207" height="64" alt="image" src="https://github.com/user-attachments/assets/199bbeb5-3ffa-459f-a3f2-808aadbe663f" />
+
+Launch type tabs, Servers can launch from Limecraft too now
+<img width="1919" height="1003" alt="image" src="https://github.com/user-attachments/assets/817247b7-79b5-4108-a08f-591fff65b006" />
+<img width="1919" height="1007" alt="image" src="https://github.com/user-attachments/assets/7d144d5d-33e9-412d-822c-3d88a36bf01e" />
