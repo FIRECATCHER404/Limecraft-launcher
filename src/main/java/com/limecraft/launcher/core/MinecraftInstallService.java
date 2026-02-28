@@ -105,7 +105,10 @@ public final class MinecraftInstallService {
 
             LibraryArtifact artifact = resolveMainArtifact(lib);
             if (artifact != null) {
-                downloader.downloadTo(artifact.url(), gameDir.resolve("libraries").resolve(artifact.path()));
+                Path out = gameDir.resolve("libraries").resolve(artifact.path());
+                if (!java.nio.file.Files.exists(out)) {
+                    downloader.downloadTo(artifact.url(), out);
+                }
             }
 
             if (lib.has("downloads") && lib.getAsJsonObject("downloads").has("classifiers")) {
@@ -122,7 +125,10 @@ public final class MinecraftInstallService {
                     JsonObject nativeArtifact = classifiers.getAsJsonObject(chosenKey);
                     String path = nativeArtifact.get("path").getAsString();
                     String url = nativeArtifact.get("url").getAsString();
-                    downloader.downloadTo(url, gameDir.resolve("libraries").resolve(path));
+                    Path out = gameDir.resolve("libraries").resolve(path);
+                    if (!java.nio.file.Files.exists(out)) {
+                        downloader.downloadTo(url, out);
+                    }
                 }
             }
             listener.onProgress("Libraries: " + i + "/" + total, 0.25 + (0.4 * ((double) i / total)));
