@@ -35,6 +35,7 @@ import java.io.File;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
+import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -136,7 +137,8 @@ public final class LimecraftApp extends Application {
             private final MenuItem openModsFolderItem = new MenuItem("open mods folder");
             private final ContextMenu fabricMenu = new ContextMenu(fabricDeleteItem, openModsFolderItem);
             private final MenuItem duplicateItem = new MenuItem("Duplicate Version");
-            private final ContextMenu builtinMenu = new ContextMenu(duplicateItem);
+            private final MenuItem showChangelogItem = new MenuItem("Show Changelog");
+            private final ContextMenu builtinMenu = new ContextMenu(duplicateItem, showChangelogItem);
 
             {
                 HBox.setHgrow(spacer, Priority.ALWAYS);
@@ -171,6 +173,12 @@ public final class LimecraftApp extends Application {
                     VersionEntry selected = getItem();
                     if (selected != null) {
                         openAddVersionDialog(selected, null);
+                    }
+                });
+                showChangelogItem.setOnAction(e -> {
+                    VersionEntry selected = getItem();
+                    if (selected != null) {
+                        showVersionChangelog(selected);
                     }
                 });
             }
@@ -1153,6 +1161,30 @@ public final class LimecraftApp extends Application {
             }
         });
     }
+
+    private void showVersionChangelog(VersionEntry version) {
+        if (version == null || isManagedVersion(version)) {
+            setStatus("Changelog is only available for vanilla versions.", 0);
+            return;
+        }
+
+        String query = "Java Edition " + version.id() + " changelog";
+        String encoded = URLEncoder.encode(query, StandardCharsets.UTF_8).replace("+", "%20");
+        String changelogUrl = "https://minecraft.wiki/w/Special:Search?search=" + encoded;
+
+        io.submit(() -> {
+            try {
+                if (!Desktop.isDesktopSupported() || !Desktop.getDesktop().isSupported(Desktop.Action.BROWSE)) {
+                    throw new IllegalStateException("Desktop browse integration is not supported on this system.");
+                }
+                Desktop.getDesktop().browse(URI.create(changelogUrl));
+                setStatus("Opened changelog for " + version.id(), 0);
+            } catch (Exception ex) {
+                fail(ex);
+            }
+        });
+    }
+
     private void setModeVisibility(VBox microsoftAuthBox, VBox offlineAuthBox, boolean microsoft) {
         microsoftAuthBox.setManaged(microsoft);
         microsoftAuthBox.setVisible(microsoft);
