@@ -81,7 +81,7 @@ Write-Host "Packaging jpackage app-image to $Dest..."
   --java-options "--module-path" `
   --java-options "`$APPDIR" `
   --java-options "--add-modules" `
-  --java-options "javafx.controls,javafx.graphics" `
+  --java-options "javafx.controls,javafx.graphics,javafx.web" `
   @iconArgs `
   --dest $Dest
 

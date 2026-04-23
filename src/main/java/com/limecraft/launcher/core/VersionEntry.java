@@ -1,6 +1,10 @@
 package com.limecraft.launcher.core;
 
-public record VersionEntry(String id, String type, String url, String releaseTime) {
+public record VersionEntry(String id, String type, String url, String releaseTime, String side) {
+    public VersionEntry(String id, String type, String url, String releaseTime) {
+        this(id, type, url, releaseTime, "both");
+    }
+
     public String displayType() {
         String lowerId = id.toLowerCase();
         String lowerType = type.toLowerCase();
@@ -35,5 +39,13 @@ public record VersionEntry(String id, String type, String url, String releaseTim
     @Override
     public String toString() {
         return id + " (" + displayType() + ")";
+    }
+
+    public boolean supportsClient() {
+        return !"server".equalsIgnoreCase(side);
+    }
+
+    public boolean supportsServer() {
+        return !"client".equalsIgnoreCase(side);
     }
 }

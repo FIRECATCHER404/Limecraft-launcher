@@ -111,24 +111,11 @@ public final class MinecraftInstallService {
                 }
             }
 
-            if (lib.has("downloads") && lib.getAsJsonObject("downloads").has("classifiers")) {
-                JsonObject downloads = lib.getAsJsonObject("downloads");
-                JsonObject classifiers = downloads.getAsJsonObject("classifiers");
-                String key = switch (os) {
-                    case "windows" -> "natives-windows";
-                    case "osx" -> "natives-macos";
-                    default -> "natives-linux";
-                };
-                String fallbackKey = "osx".equals(os) ? "natives-osx" : key;
-                String chosenKey = classifiers.has(key) ? key : fallbackKey;
-                if (classifiers.has(chosenKey)) {
-                    JsonObject nativeArtifact = classifiers.getAsJsonObject(chosenKey);
-                    String path = nativeArtifact.get("path").getAsString();
-                    String url = nativeArtifact.get("url").getAsString();
-                    Path out = gameDir.resolve("libraries").resolve(path);
-                    if (!java.nio.file.Files.exists(out)) {
-                        downloader.downloadTo(url, out);
-                    }
+            LibraryArtifact nativeArtifact = resolveNativeArtifact(lib, os);
+            if (nativeArtifact != null) {
+                Path out = gameDir.resolve("libraries").resolve(nativeArtifact.path());
+                if (!java.nio.file.Files.exists(out)) {
+                    downloader.downloadTo(nativeArtifact.url(), out);
                 }
             }
             listener.onProgress("Libraries: " + i + "/" + total, 0.25 + (0.4 * ((double) i / total)));
@@ -143,12 +130,98 @@ public final class MinecraftInstallService {
         if (!lib.has("name")) {
             return null;
         }
+        // Older manifests often mark native-only libraries with "natives" and no main artifact.
+        // Downloading the unclassified jar in that case causes 404s (for example lwjgl-platform 2.9.0).
+        if (lib.has("natives")) {
+            return null;
+        }
         String path = toMavenPath(lib.get("name").getAsString());
+        String base = normalizeRepositoryBase(lib);
+        return new LibraryArtifact(path, base + path);
+    }
+
+    private LibraryArtifact resolveNativeArtifact(JsonObject lib, String os) {
+        if (lib.has("downloads") && lib.getAsJsonObject("downloads").has("classifiers")) {
+            JsonObject classifiers = lib.getAsJsonObject("downloads").getAsJsonObject("classifiers");
+            String chosenKey = chooseNativeClassifierKey(classifiers, os);
+            if (chosenKey == null) {
+                return null;
+            }
+            JsonObject nativeArtifact = classifiers.getAsJsonObject(chosenKey);
+            return new LibraryArtifact(
+                    nativeArtifact.get("path").getAsString(),
+                    nativeArtifact.get("url").getAsString()
+            );
+        }
+        if (!lib.has("name") || !lib.has("natives") || !lib.get("natives").isJsonObject()) {
+            return null;
+        }
+        JsonObject natives = lib.getAsJsonObject("natives");
+        if (!natives.has(os)) {
+            return null;
+        }
+        String classifier = natives.get(os).getAsString().replace("${arch}", detectArchitectureBits());
+        String path = toMavenPath(appendClassifier(lib.get("name").getAsString(), classifier));
+        String base = normalizeRepositoryBase(lib);
+        return new LibraryArtifact(path, base + path);
+    }
+
+    private String chooseNativeClassifierKey(JsonObject classifiers, String os) {
+        String base = switch (os) {
+            case "windows" -> "natives-windows";
+            case "osx" -> "natives-macos";
+            default -> "natives-linux";
+        };
+        String fallback = "osx".equals(os) ? "natives-osx" : base;
+        String arch = detectArchitectureBits();
+
+        String[] preferred = new String[] {
+                base + "-" + arch,
+                base,
+                fallback + "-" + arch,
+                fallback
+        };
+        for (String key : preferred) {
+            if (classifiers.has(key)) {
+                return key;
+            }
+        }
+        for (var entry : classifiers.entrySet()) {
+            String key = entry.getKey();
+            if (key.startsWith(base + "-") || key.startsWith(fallback + "-")) {
+                return key;
+            }
+        }
+        return null;
+    }
+
+    private String appendClassifier(String notation, String classifier) {
+        String ext = "";
+        String base = notation;
+        int at = notation.indexOf('@');
+        if (at >= 0) {
+            base = notation.substring(0, at);
+            ext = notation.substring(at);
+        }
+
+        String[] parts = base.split(":");
+        if (parts.length < 3) {
+            throw new IllegalArgumentException("Invalid library notation: " + notation);
+        }
+
+        StringBuilder withClassifier = new StringBuilder();
+        withClassifier.append(parts[0]).append(':').append(parts[1]).append(':').append(parts[2]);
+        withClassifier.append(':').append(classifier);
+        withClassifier.append(ext);
+        return withClassifier.toString();
+    }
+
+    private String normalizeRepositoryBase(JsonObject lib) {
         String base = lib.has("url") ? lib.get("url").getAsString() : "https://libraries.minecraft.net/";
         if (!base.endsWith("/")) {
             base += "/";
         }
-        return new LibraryArtifact(path, base + path);
+        return base;
     }
 
     private String toMavenPath(String notation) {
@@ -228,6 +301,11 @@ public final class MinecraftInstallService {
             }
         }
         return allowed;
+    }
+
+    private String detectArchitectureBits() {
+        String arch = System.getProperty("os.arch", "").toLowerCase();
+        return arch.contains("64") ? "64" : "32";
     }
 
     private String detectOs() {

@@ -35,8 +35,32 @@ public final class MicrosoftAuthService {
     }
 
     public MinecraftAccount completeDeviceLogin(DeviceCodeInfo deviceCodeInfo) throws Exception {
-        String msAccessToken = pollForMicrosoftToken(deviceCodeInfo);
+        MicrosoftToken msToken = pollForMicrosoftToken(deviceCodeInfo);
+        return authenticateWithMicrosoftToken(msToken.accessToken(), msToken.refreshToken());
+    }
 
+    public MinecraftAccount signInWithRefreshToken(String refreshToken) throws Exception {
+        if (refreshToken == null || refreshToken.isBlank()) {
+            throw new IllegalArgumentException("Microsoft refresh token is missing.");
+        }
+
+        FormBody refreshBody = new FormBody.Builder()
+                .add("grant_type", "refresh_token")
+                .add("client_id", clientId)
+                .add("refresh_token", refreshToken)
+                .add("scope", "XboxLive.signin offline_access")
+                .build();
+
+        JsonObject tokenRes = http.postForm("https://login.microsoftonline.com/consumers/oauth2/v2.0/token", refreshBody);
+        String msAccessToken = requiredString(tokenRes, "access_token", "Microsoft refresh token response");
+        String nextRefreshToken = optionalString(tokenRes, "refresh_token");
+        if (nextRefreshToken.isBlank()) {
+            nextRefreshToken = refreshToken;
+        }
+        return authenticateWithMicrosoftToken(msAccessToken, nextRefreshToken);
+    }
+
+    private MinecraftAccount authenticateWithMicrosoftToken(String msAccessToken, String msRefreshToken) throws Exception {
         JsonObject xblAuthReq = new JsonObject();
         JsonObject xblProps = new JsonObject();
         xblProps.addProperty("AuthMethod", "RPS");
@@ -88,7 +112,7 @@ public final class MicrosoftAuthService {
             throw new IOException("Minecraft profile is missing id/name. Account may not own Java Edition or profile is not set up.");
         }
 
-        return new MinecraftAccount(mcAccessToken, username, uuid, xuid);
+        return new MinecraftAccount(mcAccessToken, username, uuid, xuid, msRefreshToken);
     }
 
     public boolean hasGameOwnership(String minecraftAccessToken) throws IOException {
@@ -118,16 +142,19 @@ public final class MicrosoftAuthService {
         }
     }
 
-    private String pollForMicrosoftToken(DeviceCodeInfo info) throws Exception {
+    private MicrosoftToken pollForMicrosoftToken(DeviceCodeInfo info) throws Exception {
         while (true) {
             FormBody poll = new FormBody.Builder()
                     .add("grant_type", "urn:ietf:params:oauth:grant-type:device_code")
                     .add("client_id", clientId)
                     .add("device_code", info.deviceCode())
+                    .add("scope", "XboxLive.signin offline_access")
                     .build();
             try {
                 JsonObject tokenRes = http.postForm("https://login.microsoftonline.com/consumers/oauth2/v2.0/token", poll);
-                return requiredString(tokenRes, "access_token", "Microsoft token response");
+                String accessToken = requiredString(tokenRes, "access_token", "Microsoft token response");
+                String refreshToken = optionalString(tokenRes, "refresh_token");
+                return new MicrosoftToken(accessToken, refreshToken);
             } catch (IOException ex) {
                 String message = ex.getMessage() == null ? "" : ex.getMessage();
                 if (message.contains("authorization_pending")) {
@@ -137,6 +164,9 @@ public final class MicrosoftAuthService {
                 if (message.contains("slow_down")) {
                     Thread.sleep((Math.max(1, info.intervalSeconds()) + 5L) * 1000L);
                     continue;
+                }
+                if (message.contains("AADSTS70020") || (message.contains("invalid_grant") && message.contains("device_code"))) {
+                    throw new IOException("Microsoft rejected the device code (AADSTS70020). Start sign-in again to request a new code.", ex);
                 }
                 throw ex;
             }
@@ -192,6 +222,8 @@ public final class MicrosoftAuthService {
         }
         return optionalString(first.getAsJsonObject(), key);
     }
+
+    private record MicrosoftToken(String accessToken, String refreshToken) {}
 }
 
 

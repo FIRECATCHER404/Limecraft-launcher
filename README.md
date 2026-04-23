@@ -28,6 +28,6 @@ Launch type tabs, Servers can launch from Limecraft too now
 <img width="1919" height="1003" alt="image" src="https://github.com/user-attachments/assets/817247b7-79b5-4108-a08f-591fff65b006" />
 <img width="1919" height="1007" alt="image" src="https://github.com/user-attachments/assets/7d144d5d-33e9-412d-822c-3d88a36bf01e" />
 
-Fabric installations and install window
+Modloader installations and install window
 <img width="1919" height="1002" alt="image" src="https://github.com/user-attachments/assets/5c7810b9-7e36-46e7-aaab-896e5a82592d" />
 <img width="751" height="268" alt="image" src="https://github.com/user-attachments/assets/e0fe4adf-5a35-44d6-9469-f79a6ff216f5" />
