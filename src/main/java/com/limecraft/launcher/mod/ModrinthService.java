@@ -4,6 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.limecraft.launcher.core.AppVersion;
 import com.limecraft.launcher.core.Downloader;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
@@ -187,7 +188,7 @@ public final class ModrinthService {
     private JsonObject getJson(String url) throws IOException {
         Request request = new Request.Builder()
                 .url(url)
-                .header("User-Agent", "Limecraft/1.0")
+                .header("User-Agent", AppVersion.userAgent())
                 .get()
                 .build();
         try (Response response = client.newCall(request).execute()) {
@@ -201,7 +202,7 @@ public final class ModrinthService {
     private JsonArray getJsonArray(String url) throws IOException {
         Request request = new Request.Builder()
                 .url(url)
-                .header("User-Agent", "Limecraft/1.0")
+                .header("User-Agent", AppVersion.userAgent())
                 .get()
                 .build();
         try (Response response = client.newCall(request).execute()) {

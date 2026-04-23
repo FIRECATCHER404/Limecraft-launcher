@@ -42,7 +42,7 @@ public final class MinecraftLaunchService {
             throw new IllegalStateException("Missing client jar for " + versionId + " (or its parent version)");
         }
 
-        Path instanceDir = gameDir.resolve("instances").resolve(safeFolderName(versionId));
+        Path instanceDir = gameDir.resolve("client");
         Files.createDirectories(instanceDir);
 
         List<String> classpathEntries = buildClasspathEntries(effectiveMeta, gameJar, os);
@@ -558,8 +558,8 @@ public final class MinecraftLaunchService {
         vars.put("user_type", account != null ? "msa" : "legacy");
         vars.put("version_type", buildVersionType(meta, includeLimecraftSuffix, hideCustomSuffix));
         vars.put("natives_directory", nativesDir.toAbsolutePath().toString());
-        vars.put("launcher_name", "Limecraft");
-        vars.put("launcher_version", "1.0.0");
+        vars.put("launcher_name", AppVersion.APP_NAME);
+        vars.put("launcher_version", AppVersion.CURRENT);
         vars.put("classpath", String.join(System.getProperty("path.separator"), cp));
         vars.put("resolution_width", "1280");
         vars.put("resolution_height", "720");

@@ -4,6 +4,90 @@
     -fx-background-color: linear-gradient(to bottom right, #0d1014, #171c23);
 }
 
+.shell-root {
+    -fx-background-color: linear-gradient(to bottom right, #0d1014, #171c23);
+}
+
+.shell-content {
+    -fx-background-color: transparent;
+}
+
+.custom-topbar {
+    -fx-background-color: linear-gradient(to right, #11161d, #1a2029);
+    -fx-border-color: transparent transparent #283140 transparent;
+    -fx-border-width: 0 0 1 0;
+}
+
+.topbar-title {
+    -fx-text-fill: #e8ffe5;
+    -fx-font-size: 18px;
+    -fx-font-weight: 700;
+}
+
+.topbar-chip {
+    -fx-background-radius: 999;
+    -fx-border-radius: 999;
+    -fx-padding: 6 12;
+    -fx-font-size: 11px;
+    -fx-font-weight: 700;
+}
+
+.topbar-chip-button {
+    -fx-cursor: hand;
+}
+
+.topbar-chip-idle {
+    -fx-background-color: #1f2732;
+    -fx-border-color: #334052;
+    -fx-text-fill: #aeb8c7;
+}
+
+.topbar-chip-active {
+    -fx-background-color: #24452c;
+    -fx-border-color: #4e7d5a;
+    -fx-text-fill: #dff8d5;
+}
+
+.topbar-chip-ready {
+    -fx-background-color: #365b1f;
+    -fx-border-color: #8cc85c;
+    -fx-text-fill: #f2ffe8;
+}
+
+.topbar-chip-alert {
+    -fx-background-color: #5a251f;
+    -fx-border-color: #b76552;
+    -fx-text-fill: #ffe1d8;
+}
+
+.topbar-chip-account {
+    -fx-background-color: #1f3554;
+    -fx-border-color: #537aa9;
+    -fx-text-fill: #dfeeff;
+}
+
+.window-button {
+    -fx-background-color: #1f2732;
+    -fx-border-color: #344152;
+    -fx-text-fill: #d5dbe4;
+    -fx-font-weight: 700;
+    -fx-padding: 8 0;
+}
+
+.window-button:hover {
+    -fx-background-color: #2a3442;
+}
+
+.window-button-close {
+    -fx-background-color: #5a1f1f;
+    -fx-border-color: #924040;
+    -fx-text-fill: #ffe1e1;
+}
+
+.window-button-close:hover {
+    -fx-background-color: #722a2a;
+}
+
 .label {
     -fx-text-fill: #d5dbe4;
 }

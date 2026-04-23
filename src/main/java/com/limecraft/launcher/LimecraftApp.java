@@ -9,10 +9,13 @@ import com.limecraft.launcher.auth.MicrosoftAuthService;
 import com.limecraft.launcher.auth.MinecraftAccount;
 import com.limecraft.launcher.auth.SavedMicrosoftAccount;
 import com.limecraft.launcher.auth.WindowsDpapiTokenStore;
+import com.limecraft.launcher.core.AppPaths;
+import com.limecraft.launcher.core.AppVersion;
 import com.limecraft.launcher.core.BackupService;
 import com.limecraft.launcher.core.CrashReportAnalyzer;
 import com.limecraft.launcher.core.HttpClient;
 import com.limecraft.launcher.core.JavaRuntimeService;
+import com.limecraft.launcher.core.LauncherJobExecutor;
 import com.limecraft.launcher.core.MinecraftInstallService;
 import com.limecraft.launcher.core.MinecraftLaunchService;
 import com.limecraft.launcher.core.VersionEntry;
@@ -24,8 +27,10 @@ import com.limecraft.launcher.modloader.ModloaderInstallService;
 import com.limecraft.launcher.modloader.ProfileSide;
 import com.limecraft.launcher.profile.ProfileMetadata;
 import com.limecraft.launcher.profile.ProfileMetadataStore;
+import com.limecraft.launcher.shell.LauncherShell;
 import com.limecraft.launcher.server.ServerProfileSettings;
 import com.limecraft.launcher.server.ServerProfileStore;
+import com.limecraft.launcher.update.LauncherUpdateService;
 import javafx.application.Application;
 import javafx.beans.property.ReadOnlyStringWrapper;
 import javafx.application.Platform;
@@ -43,6 +48,7 @@ import javafx.scene.web.WebView;
 import javafx.stage.FileChooser;
 import javafx.stage.Modality;
 import javafx.stage.Stage;
+import javafx.stage.StageStyle;
 
 import java.awt.Desktop;
 import java.io.BufferedReader;
@@ -52,6 +58,8 @@ import java.io.File;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.nio.charset.StandardCharsets;
 import java.net.URI;
 import java.net.URLEncoder;
@@ -70,8 +78,6 @@ import java.util.Set;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
@@ -94,10 +100,11 @@ public final class LimecraftApp extends Application {
     private static final String MICROSOFT_CLIENT_ID = "ba5cdd7c-bc36-4702-9613-35f14f83e52c";
     private static final String JAVA_PATCH_NOTES_INDEX_URL = "https://launchercontent.mojang.com/v2/javaPatchNotes.json";
     private static final String JAVA_PATCH_NOTES_BASE_URL = "https://launchercontent.mojang.com/v2/";
+    private static final boolean SHARED_CLIENT_WORKSPACE = true;
 
-    private final ExecutorService io = Executors.newFixedThreadPool(4);
-
-    private final Path gameDir = Path.of(System.getProperty("user.home"), ".limecraft");
+    private final AppPaths appPaths = AppPaths.detect();
+    private final LauncherJobExecutor io = new LauncherJobExecutor(4);
+    private final Path gameDir = appPaths.dataDir();
     private final HttpClient http = new HttpClient();
     private final MinecraftInstallService installService = new MinecraftInstallService(http, gameDir);
     private final MinecraftLaunchService launchService = new MinecraftLaunchService(gameDir);
@@ -109,8 +116,13 @@ public final class LimecraftApp extends Application {
     private final JavaRuntimeService javaRuntimeService = new JavaRuntimeService();
     private final ModrinthService modrinthService = new ModrinthService(http.raw());
     private final ModloaderInstallService modloaderInstallService = new ModloaderInstallService(http, installService, gameDir);
+    private final LauncherUpdateService updateService = new LauncherUpdateService(http.raw());
 
     private MinecraftAccount signedInAccount;
+    private Stage primaryStage;
+    private LauncherShell launcherShell;
+    private LauncherUpdateService.ReleaseInfo availableUpdate;
+    private String lastLauncherErrorSummary = "";
 
     private ListView<VersionEntry> versionsList;
     private Label status;
@@ -171,6 +183,7 @@ public final class LimecraftApp extends Application {
     private String selectedAccountId = "";
     private volatile boolean microsoftSignInInProgress;
     private volatile boolean loadingServerSettings;
+    private volatile boolean legacyManagedVersionImportAttempted;
     private boolean includeLimecraftSuffix = true;
     private final List<String> recentVersions = new ArrayList<>();
     private long currentGameLaunchStartedAtMillis;
@@ -181,6 +194,7 @@ public final class LimecraftApp extends Application {
 
     @Override
     public void start(Stage stage) {
+        primaryStage = stage;
         loadSettings();
 
         versionsList = new ListView<>();
@@ -314,10 +328,7 @@ public final class LimecraftApp extends Application {
                     }
                 });
                 duplicateItem.setOnAction(e -> {
-                    VersionEntry selected = getItem();
-                    if (selected != null) {
-                        openAddVersionDialog(selected, null);
-                    }
+                    setStatus("Manual custom versions are disabled because the client workspace is shared.", 0);
                 });
                 showChangelogItem.setOnAction(e -> {
                     VersionEntry selected = getItem();
@@ -349,6 +360,10 @@ public final class LimecraftApp extends Application {
                         openWorldTransferDialog(selected);
                     }
                 });
+                duplicateItem.setDisable(SHARED_CLIENT_WORKSPACE);
+                if (SHARED_CLIENT_WORKSPACE) {
+                    builtinMenu.getItems().remove(duplicateItem);
+                }
             }
 
             @Override
@@ -411,6 +426,7 @@ public final class LimecraftApp extends Application {
         savedAccountsBox.valueProperty().addListener((obs, oldVal, newVal) -> {
             selectedAccountId = newVal == null ? "" : newVal.profileId();
             saveSettings();
+            updateAccountIndicator();
         });
         useSavedAccountButton = new Button("Use Saved");
         useSavedAccountButton.setOnAction(e -> restoreSelectedAccountSession());
@@ -437,6 +453,7 @@ public final class LimecraftApp extends Application {
             if (newVal != null) {
                 savedAccountMode = newVal;
                 saveSettings();
+                updateAccountIndicator();
             }
         });
         searchField = new TextField();
@@ -460,6 +477,8 @@ public final class LimecraftApp extends Application {
 
         addVersionButton = new Button("Add Version");
         addVersionButton.setOnAction(e -> openAddVersionDialog(null, null));
+        addVersionButton.setVisible(false);
+        addVersionButton.setManaged(false);
 
         installModloaderButton = new Button("Install Modloader");
         installModloaderButton.setOnAction(e -> openModloaderInstallDialog());
@@ -604,7 +623,7 @@ public final class LimecraftApp extends Application {
         leftScroll.setMinWidth(320);
 
         Label versionsLabel = new Label("Minecraft Versions");
-        VBox right = new VBox(8, addVersionButton, installModloaderButton, versionsLabel, versionsList);
+        VBox right = new VBox(8, installModloaderButton, versionsLabel, versionsList);
         HBox.setHgrow(right, Priority.ALWAYS);
         VBox.setVgrow(versionsList, Priority.ALWAYS);
         right.setMaxWidth(Double.MAX_VALUE);
@@ -663,19 +682,37 @@ public final class LimecraftApp extends Application {
         TabPane tabPane = new TabPane(clientTab, serverTab);
         tabPane.setTabClosingPolicy(TabPane.TabClosingPolicy.UNAVAILABLE);
 
-        Scene scene = new Scene(tabPane, 980, 640);
+        launcherShell = new LauncherShell(stage, AppVersion.APP_NAME, tabPane);
+        launcherShell.setUpdateAction(this::triggerAvailableUpdate);
+        launcherShell.setErrorAction(this::reportLauncherError);
+        io.setActivityListener(this::updateJobIndicator);
+
+        Scene scene = new Scene(launcherShell.root(), 980, 640);
         scene.getStylesheets().add(getClass().getResource("/limecraft.css").toExternalForm());
 
-        stage.setTitle("Limecraft");
+        stage.initStyle(StageStyle.UNDECORATED);
+        stage.setTitle(AppVersion.APP_NAME);
         stage.getIcons().add(new Image(getClass().getResourceAsStream("/limecraft.png")));
         stage.setScene(scene);
+        stage.setResizable(true);
+        stage.setMinWidth(920);
+        stage.setMinHeight(620);
+        stage.centerOnScreen();
         stage.show();
+        Platform.runLater(() -> {
+            stage.toFront();
+            stage.requestFocus();
+        });
 
+        appendLog("[Limecraft] Using " + appPaths.storageModeLabel() + " storage at " + gameDir.toAbsolutePath());
+        updateAccountIndicator();
+        updateUpdateIndicator();
         updateClientModBrowserButtonState();
         updateServerModBrowserButtonState();
         refreshSavedAccountsBox();
         refreshVersions();
         restoreSavedMicrosoftSession();
+        checkForLauncherUpdates();
     }
 
     private Label title(String text) {
@@ -1001,6 +1038,10 @@ public final class LimecraftApp extends Application {
     }
 
     private void openAddVersionDialog(VersionEntry duplicateBase, VersionEntry editingVersion) {
+        if (SHARED_CLIENT_WORKSPACE) {
+            setStatus("Manual custom versions are disabled because the client workspace is shared.", 0);
+            return;
+        }
         Stage dialog = new Stage();
         dialog.initModality(Modality.APPLICATION_MODAL);
         dialog.setTitle(editingVersion != null ? "Edit Version" : "Add Version");
@@ -1534,7 +1575,7 @@ public final class LimecraftApp extends Application {
     }
 
     private boolean isManagedVersion(VersionEntry version) {
-        return isCustomVersion(version) || isModdedVersion(version);
+        return isModdedVersion(version);
     }
 
     private void deleteManagedVersion(VersionEntry version) {
@@ -1555,10 +1596,12 @@ public final class LimecraftApp extends Application {
         io.submit(() -> {
             try {
                 Path versionDir = gameDir.resolve("versions").resolve(version.id());
-                Path instanceDir = gameDir.resolve("instances").resolve(version.id().replaceAll("[\\/:*?\"<>|]", "_"));
+                Path instanceDir = SHARED_CLIENT_WORKSPACE ? null : gameDir.resolve("instances").resolve(version.id().replaceAll("[\\/:*?\"<>|]", "_"));
                 Path backup = backupService.snapshotVersion(version.id(), versionDir, instanceDir);
                 deleteDirectoryIfExists(versionDir);
-                deleteDirectoryIfExists(instanceDir);
+                if (instanceDir != null) {
+                    deleteDirectoryIfExists(instanceDir);
+                }
                 Platform.runLater(() -> {
                     List<VersionEntry> updated = new ArrayList<>(allVersions);
                     updated.removeIf(v -> v.id().equalsIgnoreCase(version.id()));
@@ -1616,6 +1659,9 @@ public final class LimecraftApp extends Application {
     }
 
     private Path instanceDirForId(String versionId) {
+        if (SHARED_CLIENT_WORKSPACE) {
+            return gameDir.resolve("client");
+        }
         return gameDir.resolve("instances").resolve(safeFolderName(versionId));
     }
 
@@ -1854,6 +1900,10 @@ public final class LimecraftApp extends Application {
     }
 
     private void openWorldTransferDialog(VersionEntry source) {
+        if (SHARED_CLIENT_WORKSPACE) {
+            setStatus("World transfer is not needed because the client workspace is shared.", 0);
+            return;
+        }
         if (source == null) {
             setStatus("Select a version first.", 0);
             return;
@@ -1998,13 +2048,10 @@ public final class LimecraftApp extends Application {
             return;
         }
         Path instanceDir = instanceDirFor(version);
-        if (!Files.isDirectory(instanceDir)) {
-            setStatus("Launch this modded profile once before opening its mods folder.", 0);
-            return;
-        }
         Path modsDir = instanceDir.resolve("mods");
         io.submit(() -> {
             try {
+                Files.createDirectories(instanceDir);
                 Files.createDirectories(modsDir);
                 if (!Desktop.isDesktopSupported()) {
                     throw new IllegalStateException("Desktop integration is not supported on this system.");
@@ -2164,7 +2211,7 @@ public final class LimecraftApp extends Application {
 
     private JsonObject loadVersionMetaQuiet(String versionId) {
         try {
-            Path versionJson = gameDir.resolve("versions").resolve(versionId).resolve(versionId + ".json");
+            Path versionJson = findVersionJson(versionId);
             if (!Files.exists(versionJson)) {
                 return null;
             }
@@ -2172,6 +2219,34 @@ public final class LimecraftApp extends Application {
         } catch (Exception ignored) {
             return null;
         }
+    }
+
+    private Path findVersionJson(String versionId) {
+        Path localJson = gameDir.resolve("versions").resolve(versionId).resolve(versionId + ".json");
+        if (Files.exists(localJson)) {
+            return localJson;
+        }
+        Path legacyJson = appPaths.legacyDataDir().resolve("versions").resolve(versionId).resolve(versionId + ".json");
+        if (Files.exists(legacyJson)) {
+            return legacyJson;
+        }
+        return localJson;
+    }
+
+    private void ensureManagedVersionAvailableLocally(VersionEntry version) throws Exception {
+        if (version == null || version.url() != null && !version.url().isBlank()) {
+            return;
+        }
+        Path localVersionDir = gameDir.resolve("versions").resolve(version.id());
+        if (Files.isDirectory(localVersionDir)) {
+            return;
+        }
+        Path sourceVersionDir = appPaths.legacyDataDir().resolve("versions").resolve(version.id());
+        if (!Files.isDirectory(sourceVersionDir)) {
+            return;
+        }
+        copyDirectory(sourceVersionDir, localVersionDir);
+        appendLog("[Limecraft] Imported shared loader profile " + version.id() + " into " + appPaths.storageModeLabel() + " storage");
     }
 
     private Path logsDirFor(VersionEntry version) {
@@ -2230,17 +2305,13 @@ public final class LimecraftApp extends Application {
     private void diagnoseLatestCrash(VersionEntry version) {
         io.submit(() -> {
             try {
-                String diagnosis = crashReportAnalyzer.diagnose(instanceDirFor(version));
                 Platform.runLater(() -> {
-                    TextArea area = new TextArea(diagnosis);
-                    area.setEditable(false);
-                    area.setWrapText(true);
-                    area.setPrefSize(760, 420);
-                    Dialog<ButtonType> dialog = new Dialog<>();
-                    dialog.setTitle("Crash Diagnosis: " + version.id());
-                    dialog.getDialogPane().getButtonTypes().add(ButtonType.CLOSE);
-                    dialog.getDialogPane().setContent(area);
-                    dialog.showAndWait();
+                    try {
+                        CrashReportAnalyzer.DiagnosisReport diagnosis = crashReportAnalyzer.analyze(instanceDirFor(version));
+                        showDiagnosisDialog("Crash Diagnosis: " + version.id(), diagnosis);
+                    } catch (Exception ex) {
+                        fail(ex);
+                    }
                 });
             } catch (Exception ex) {
                 fail(ex);
@@ -2445,6 +2516,7 @@ public final class LimecraftApp extends Application {
         setStatus("Loading official version list...", 0.05);
         io.submit(() -> {
             try {
+                importLegacyManagedVersions();
                 List<VersionEntry> official = installService.listVersions();
                 List<VersionEntry> custom = loadCustomVersions();
 
@@ -2461,12 +2533,72 @@ public final class LimecraftApp extends Application {
                     versionsList.refresh();
                     applyVersionFilter();
                     applyServerVersionFilter();
-                    setStatus("Loaded " + official.size() + " official + " + custom.size() + " custom versions", 0);
+                    setStatus("Loaded " + official.size() + " official + " + custom.size() + " shared loader profiles", 0);
                 });
             } catch (Exception ex) {
                 fail(ex);
             }
         });
+    }
+
+    private void importLegacyManagedVersions() {
+        if (legacyManagedVersionImportAttempted) {
+            return;
+        }
+        legacyManagedVersionImportAttempted = true;
+
+        Path legacyDir = appPaths.legacyDataDir();
+        if (legacyDir == null || legacyDir.equals(gameDir)) {
+            return;
+        }
+
+        Path legacyVersionsDir = legacyDir.resolve("versions");
+        if (!Files.isDirectory(legacyVersionsDir)) {
+            return;
+        }
+
+        Path targetVersionsDir = gameDir.resolve("versions");
+        int importedCount = 0;
+        try {
+            Files.createDirectories(targetVersionsDir);
+            try (Stream<Path> stream = Files.list(legacyVersionsDir)) {
+                for (Path sourceDir : stream.filter(Files::isDirectory).toList()) {
+                    String id = sourceDir.getFileName().toString();
+                    Path sourceJson = sourceDir.resolve(id + ".json");
+                    if (!Files.exists(sourceJson)) {
+                        continue;
+                    }
+
+                    JsonObject meta;
+                    try {
+                        meta = JsonParser.parseString(Files.readString(sourceJson)).getAsJsonObject();
+                    } catch (Exception ignored) {
+                        continue;
+                    }
+
+                    String type = meta.has("type") ? meta.get("type").getAsString() : "";
+                    String loader = detectLoaderFamilyFromMetadata(meta, type);
+                    if ("vanilla".equalsIgnoreCase(loader) || "custom".equalsIgnoreCase(loader)) {
+                        continue;
+                    }
+
+                    Path targetDir = targetVersionsDir.resolve(id);
+                    if (Files.isDirectory(targetDir)) {
+                        continue;
+                    }
+
+                    copyDirectory(sourceDir, targetDir);
+                    importedCount++;
+                }
+            }
+        } catch (Exception ex) {
+            appendLog("[Limecraft] Failed to import shared loader profiles from " + legacyDir + ": " + ex.getMessage());
+            return;
+        }
+
+        if (importedCount > 0) {
+            appendLog("[Limecraft] Imported " + importedCount + " shared loader profile(s) from " + legacyDir);
+        }
     }
 
     private List<VersionEntry> loadCustomVersions() {
@@ -2488,7 +2620,7 @@ public final class LimecraftApp extends Application {
                     JsonObject meta = JsonParser.parseString(Files.readString(json)).getAsJsonObject();
                     String type = meta.has("type") ? meta.get("type").getAsString() : "";
                     String detectedLoader = detectLoaderFamilyFromMetadata(meta, type);
-                    if ("vanilla".equalsIgnoreCase(detectedLoader)) {
+                    if ("vanilla".equalsIgnoreCase(detectedLoader) || "custom".equalsIgnoreCase(detectedLoader)) {
                         return;
                     }
                     String releaseTime = meta.has("releaseTime")
@@ -2499,7 +2631,7 @@ public final class LimecraftApp extends Application {
                 }
             });
         } catch (Exception ex) {
-            appendLog("[Limecraft] Failed to load custom versions: " + ex.getMessage());
+            appendLog("[Limecraft] Failed to load managed loader profiles: " + ex.getMessage());
         }
 
         custom.sort(Comparator.comparing(VersionEntry::releaseTime).reversed());
@@ -2680,6 +2812,7 @@ public final class LimecraftApp extends Application {
             return serverJar;
         }
 
+        ensureManagedVersionAvailableLocally(version);
         JsonObject localMeta = loadVersionMetaQuiet(version.id());
         if ((version.url() == null || version.url().isBlank()) && localMeta != null) {
             String side = detectProfileSideFromMetadata(localMeta);
@@ -2983,6 +3116,7 @@ public final class LimecraftApp extends Application {
         }
         microsoftSignInInProgress = true;
         Platform.runLater(() -> signInButton.setDisable(true));
+        updateAccountIndicator();
 
         String clientId = MICROSOFT_CLIENT_ID;
 
@@ -3032,13 +3166,17 @@ public final class LimecraftApp extends Application {
                     refreshSavedAccountsBox();
                     selectSavedAccountById(savedAccount.profileId());
                     accountLabel.setText("Signed in as " + account.username());
+                    updateAccountIndicator();
                     setStatus("Signed in successfully", 0);
                 });
             } catch (Exception ex) {
                 fail(ex);
             } finally {
                 microsoftSignInInProgress = false;
-                Platform.runLater(() -> signInButton.setDisable(false));
+                Platform.runLater(() -> {
+                    signInButton.setDisable(false);
+                    updateAccountIndicator();
+                });
             }
         });
     }
@@ -3073,6 +3211,7 @@ public final class LimecraftApp extends Application {
                     refreshSavedAccountsBox();
                     selectSavedAccountById(savedAccount.profileId());
                     accountLabel.setText("Signed in as " + account.username());
+                    updateAccountIndicator();
                     setStatus("Signed in from saved session", 0);
                 });
             } catch (Exception ex) {
@@ -3081,6 +3220,7 @@ public final class LimecraftApp extends Application {
                 saveSettings();
                 Platform.runLater(() -> {
                     accountLabel.setText("Not signed in");
+                    updateAccountIndicator();
                     appendLog("[Limecraft] Saved Microsoft session expired: " + ex.getMessage());
                     if (MODE_MICROSOFT.equals(accountModeBox.getValue())) {
                         setStatus("Microsoft session expired, sign in again.", 0);
@@ -3113,6 +3253,7 @@ public final class LimecraftApp extends Application {
         Platform.runLater(() -> {
             signInButton.setDisable(true);
             useSavedAccountButton.setDisable(true);
+            updateAccountIndicator();
         });
 
         String profileId = savedAccount.profileId();
@@ -3138,12 +3279,14 @@ public final class LimecraftApp extends Application {
                     refreshSavedAccountsBox();
                     selectSavedAccountById(updated.profileId());
                     accountLabel.setText("Signed in as " + account.username());
+                    updateAccountIndicator();
                     setStatus("Signed in from saved session", 0);
                 });
             } catch (Exception ex) {
                 signedInAccount = null;
                 Platform.runLater(() -> {
                     accountLabel.setText("Not signed in");
+                    updateAccountIndicator();
                     appendLog("[Limecraft] Saved Microsoft session expired: " + ex.getMessage());
                     if (MODE_MICROSOFT.equals(accountModeBox.getValue())) {
                         setStatus("Microsoft session expired, sign in again.", 0);
@@ -3154,6 +3297,7 @@ public final class LimecraftApp extends Application {
                 Platform.runLater(() -> {
                     signInButton.setDisable(false);
                     useSavedAccountButton.setDisable(false);
+                    updateAccountIndicator();
                 });
             }
         });
@@ -3162,6 +3306,7 @@ public final class LimecraftApp extends Application {
     private void signOutCurrentAccount() {
         signedInAccount = null;
         accountLabel.setText("Not signed in");
+        updateAccountIndicator();
         setStatus("Signed out of the current Microsoft session.", 0);
     }
 
@@ -3184,6 +3329,7 @@ public final class LimecraftApp extends Application {
                 Platform.runLater(() -> {
                     refreshSavedAccountsBox();
                     accountLabel.setText(signedInAccount == null ? "Not signed in" : "Signed in as " + signedInAccount.username());
+                    updateAccountIndicator();
                     setStatus("Removed saved account " + selected.username(), 0);
                 });
             } catch (Exception ex) {
@@ -3207,6 +3353,7 @@ public final class LimecraftApp extends Application {
             boolean hasAccounts = !accounts.isEmpty();
             useSavedAccountButton.setDisable(!hasAccounts);
             removeAccountButton.setDisable(!hasAccounts);
+            updateAccountIndicator();
         } catch (Exception ex) {
             appendLog("[Limecraft] Failed to load saved accounts: " + ex.getMessage());
         }
@@ -3260,6 +3407,7 @@ public final class LimecraftApp extends Application {
         }
         io.submit(() -> {
             try {
+                ensureManagedVersionAvailableLocally(selected);
                 Path versionDir = gameDir.resolve("versions").resolve(selected.id());
                 Path versionJson = versionDir.resolve(selected.id() + ".json");
                 Path versionJar = versionDir.resolve(selected.id() + ".jar");
@@ -3361,6 +3509,7 @@ public final class LimecraftApp extends Application {
                 if (selected.url() != null && !selected.url().isBlank()) {
                     installService.installVersion(selected, this::setStatus);
                 } else {
+                    ensureManagedVersionAvailableLocally(selected);
                     JsonObject meta = loadVersionMetaQuiet(selected.id());
                     if (meta == null) {
                         throw new IllegalStateException("No local metadata exists for " + selected.id() + ".");
@@ -4249,6 +4398,148 @@ public final class LimecraftApp extends Application {
         });
     }
 
+    private void checkForLauncherUpdates() {
+        io.submit(() -> {
+            try {
+                LauncherUpdateService.ReleaseInfo latestRelease = updateService.fetchLatestRelease();
+                if (updateService.isNewerThanCurrent(latestRelease)) {
+                    availableUpdate = latestRelease;
+                    Platform.runLater(() -> {
+                        updateUpdateIndicator();
+                        appendLog("[Limecraft] Update " + latestRelease.version() + " is available.");
+                    });
+                } else {
+                    availableUpdate = null;
+                    Platform.runLater(this::updateUpdateIndicator);
+                }
+            } catch (Exception ex) {
+                appendLog("[Limecraft] Update check failed: " + ex.getMessage());
+            }
+        });
+    }
+
+    private void triggerAvailableUpdate() {
+        LauncherUpdateService.ReleaseInfo release = availableUpdate;
+        if (release == null) {
+            setStatus("No launcher update is ready.", 0);
+            return;
+        }
+
+        String releaseUrl = release.htmlUrl().isBlank() ? AppVersion.RELEASES_URL : release.htmlUrl();
+        if (!appPaths.canSelfUpdate() || release.asset() == null) {
+            openExternalUrl(releaseUrl, "Opened launcher release page");
+            return;
+        }
+
+        Alert confirm = new Alert(Alert.AlertType.CONFIRMATION);
+        confirm.setHeaderText("Install launcher update " + release.version() + "?");
+        confirm.setContentText("Limecraft will close, download the new packaged zip, replace the current app folder, and reopen.");
+        ButtonType installButton = new ButtonType("Install Update", ButtonBar.ButtonData.OK_DONE);
+        confirm.getButtonTypes().setAll(installButton, ButtonType.CANCEL);
+        if (confirm.showAndWait().orElse(ButtonType.CANCEL) != installButton) {
+            return;
+        }
+
+        try {
+            Path updaterScript = updateService.writeWindowsUpdaterScript(release, appPaths, ProcessHandle.current().pid());
+            appendLog("[Limecraft] Starting updater for " + release.version() + " using " + updaterScript);
+            new ProcessBuilder(
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    updaterScript.toString()
+            ).start();
+            Platform.exit();
+        } catch (Exception ex) {
+            fail(ex);
+        }
+    }
+
+    private void updateUpdateIndicator() {
+        if (launcherShell == null) {
+            return;
+        }
+        LauncherUpdateService.ReleaseInfo release = availableUpdate;
+        boolean available = release != null;
+        String text = available ? "Update " + release.version() : "Update";
+        String tooltip = available
+                ? "New release " + release.version() + " is ready to install."
+                : "";
+        launcherShell.setUpdateStatus(text, tooltip, available);
+    }
+
+    private void updateJobIndicator(int jobCount) {
+        Platform.runLater(() -> {
+            if (launcherShell == null) {
+                return;
+            }
+            boolean active = jobCount > 0;
+            launcherShell.setJobStatus(
+                    active ? "Jobs " + jobCount : "Idle",
+                    active ? jobCount + " launcher jobs are running or queued." : "No launcher jobs are running.",
+                    active
+            );
+        });
+    }
+
+    private void updateAccountIndicator() {
+        Platform.runLater(() -> {
+            if (launcherShell == null) {
+                return;
+            }
+            String text;
+            String tooltip;
+            boolean activeSession;
+            if (MODE_OFFLINE.equals(savedAccountMode)) {
+                activeSession = true;
+                text = "Offline " + savedOfflineUsername;
+                tooltip = "Offline mode using username " + savedOfflineUsername + ".";
+            } else if (signedInAccount != null) {
+                activeSession = true;
+                text = "Account " + signedInAccount.username();
+                tooltip = "Signed in with Microsoft as " + signedInAccount.username() + ".";
+            } else if (microsoftSignInInProgress) {
+                activeSession = false;
+                text = "Account Signing in";
+                tooltip = "Microsoft device sign-in is in progress.";
+            } else {
+                SavedMicrosoftAccount saved = selectedSavedAccount();
+                activeSession = false;
+                text = saved == null ? "Account Not signed in" : "Account " + saved.username();
+                tooltip = saved == null
+                        ? "Microsoft mode without an active session."
+                        : "Saved Microsoft account selected: " + saved.username() + ".";
+            }
+            launcherShell.setAccountStatus(text, tooltip, activeSession);
+        });
+    }
+
+    private void updateErrorIndicator() {
+        if (launcherShell == null) {
+            return;
+        }
+        boolean visible = lastLauncherErrorSummary != null && !lastLauncherErrorSummary.isBlank();
+        String tooltip = visible ? lastLauncherErrorSummary : "";
+        launcherShell.setErrorStatus("Report Error", tooltip, visible);
+    }
+
+    private void reportLauncherError() {
+        if (lastLauncherErrorSummary == null || lastLauncherErrorSummary.isBlank()) {
+            setStatus("No launcher error is ready to report.", 0);
+            return;
+        }
+        copyToClipboard(lastLauncherErrorSummary);
+        openExternalUrl(AppVersion.ISSUES_URL, "Opened launcher issue page and copied error details");
+    }
+
+    private void copyToClipboard(String text) {
+        ClipboardContent content = new ClipboardContent();
+        content.putString(text == null ? "" : text);
+        Clipboard.getSystemClipboard().setContent(content);
+    }
+
     private Path modsDirFor(VersionEntry version, String side) {
         if ("server".equalsIgnoreCase(side)) {
             return serverDirFor(version).resolve("mods");
@@ -4268,12 +4559,242 @@ public final class LimecraftApp extends Application {
 
     private void fail(Exception ex) {
         Platform.runLater(() -> {
-            status.setText("Error: " + ex.getMessage());
-            appendLog("[Limecraft] Error: " + ex.getMessage());
+            String message = friendlyErrorMessage(ex);
+            appendExceptionDetails(ex);
+
+            CrashReportAnalyzer.DiagnosisReport diagnosis = resolveSelectedClientDiagnosis();
+            String likelyCause = resolveLikelyCause(message, diagnosis);
+            String suggestedFix = resolveSuggestedFix(message, diagnosis);
+            lastLauncherErrorSummary = buildLauncherErrorSummary(message, likelyCause, suggestedFix, diagnosis);
+            updateErrorIndicator();
+
+            status.setText("Error: " + message);
+            appendLog("[Limecraft] Error: " + message);
+            if (!likelyCause.isBlank()) {
+                appendLog("[Limecraft] Likely cause: " + likelyCause);
+            }
+            if (!suggestedFix.isBlank()) {
+                appendLog("[Limecraft] Suggested fix: " + suggestedFix);
+            }
             progress.setProgress(0);
-            Alert alert = new Alert(Alert.AlertType.ERROR, ex.getMessage(), ButtonType.OK);
-            alert.setHeaderText("Limecraft error");
-            alert.showAndWait();
+            ButtonType copyDetailsButton = new ButtonType("Copy Details", ButtonBar.ButtonData.OTHER);
+            ButtonType reportIssueButton = new ButtonType("Report Issue", ButtonBar.ButtonData.LEFT);
+            ButtonType openLogButton = diagnosis != null && diagnosis.latestLog() != null
+                    ? new ButtonType("Open Latest Log", ButtonBar.ButtonData.RIGHT)
+                    : null;
+            ButtonType openCrashButton = diagnosis != null && diagnosis.latestCrashReport() != null
+                    ? new ButtonType("Open Crash Report", ButtonBar.ButtonData.RIGHT)
+                    : null;
+
+            Dialog<ButtonType> dialog = new Dialog<>();
+            dialog.setTitle("Limecraft Error");
+            dialog.setHeaderText("Limecraft error");
+            List<ButtonType> buttonTypes = new ArrayList<>();
+            buttonTypes.add(ButtonType.OK);
+            buttonTypes.add(copyDetailsButton);
+            buttonTypes.add(reportIssueButton);
+            if (openLogButton != null) {
+                buttonTypes.add(openLogButton);
+            }
+            if (openCrashButton != null) {
+                buttonTypes.add(openCrashButton);
+            }
+            dialog.getDialogPane().getButtonTypes().setAll(buttonTypes);
+            dialog.getDialogPane().setContent(buildFailureDialogContent(message, likelyCause, suggestedFix, diagnosis));
+            ButtonType result = dialog.showAndWait().orElse(ButtonType.OK);
+            if (result == copyDetailsButton) {
+                copyToClipboard(lastLauncherErrorSummary);
+                setStatus("Copied launcher error details to clipboard.", 0);
+            } else if (result == reportIssueButton) {
+                reportLauncherError();
+            } else if (openLogButton != null && result == openLogButton) {
+                openDesktopPath(diagnosis.latestLog(), "Opened latest log");
+            } else if (openCrashButton != null && result == openCrashButton) {
+                openDesktopPath(diagnosis.latestCrashReport(), "Opened latest crash report");
+            }
+        });
+    }
+
+    private String friendlyErrorMessage(Exception ex) {
+        if (ex == null) {
+            return "Unknown launcher error.";
+        }
+        String message = ex.getMessage();
+        if (message == null || message.isBlank()) {
+            return ex.getClass().getSimpleName();
+        }
+        return message.trim();
+    }
+
+    private String resolveLikelyCause(String message, CrashReportAnalyzer.DiagnosisReport diagnosis) {
+        if (diagnosis != null && !diagnosis.primaryCause().isBlank()) {
+            return diagnosis.primaryCause();
+        }
+        String normalized = message == null ? "" : message.toLowerCase(Locale.ROOT);
+        if (normalized.contains("access is denied") || normalized.contains("permission denied")) {
+            return "The launcher could not read or write one of its files.";
+        }
+        if (normalized.contains("desktop integration")) {
+            return "This machine is blocking the launcher from opening external files or URLs.";
+        }
+        if (normalized.contains("no refresh token")) {
+            return "The saved Microsoft session no longer has a usable refresh token.";
+        }
+        return "The launcher hit an internal error before it could complete the action.";
+    }
+
+    private String resolveSuggestedFix(String message, CrashReportAnalyzer.DiagnosisReport diagnosis) {
+        if (diagnosis != null && !diagnosis.primaryFix().isBlank()) {
+            return diagnosis.primaryFix();
+        }
+        return suggestLauncherFix(message);
+    }
+
+    private String suggestLauncherFix(String message) {
+        String normalized = message == null ? "" : message.toLowerCase(Locale.ROOT);
+        if (normalized.contains("access is denied") || normalized.contains("permission denied")) {
+            return "Close any running Limecraft build, then retry from a writable folder.";
+        }
+        if (normalized.contains("java 8")) {
+            return "Set the Java Path to a Java 8 runtime for this older profile.";
+        }
+        if (normalized.contains("desktop integration")) {
+            return "Open the link manually in your browser if this machine blocks desktop integration.";
+        }
+        if (normalized.contains("self-update is only available")) {
+            return "Run the packaged app image from the release zip, or update manually from GitHub Releases.";
+        }
+        if (normalized.contains("no refresh token")) {
+            return "Sign in again with Microsoft so Limecraft can refresh the session.";
+        }
+        return "Check the launcher log output, then use Report Issue if the error keeps happening.";
+    }
+
+    private String buildLauncherErrorSummary(String message, String likelyCause, String suggestedFix, CrashReportAnalyzer.DiagnosisReport diagnosis) {
+        VersionEntry selectedClient = versionsList == null ? null : versionsList.getSelectionModel().getSelectedItem();
+        VersionEntry selectedServer = serverVersionsList == null ? null : serverVersionsList.getSelectionModel().getSelectedItem();
+        return String.join(System.lineSeparator(),
+                "Launcher version: " + AppVersion.CURRENT,
+                "Storage mode: " + appPaths.storageModeLabel(),
+                "Data directory: " + gameDir.toAbsolutePath(),
+                "OS: " + System.getProperty("os.name", "unknown") + " " + System.getProperty("os.version", ""),
+                "Client profile: " + (selectedClient == null ? "none" : selectedClient.id()),
+                "Server profile: " + (selectedServer == null ? "none" : selectedServer.id()),
+                "Error: " + message,
+                "Likely cause: " + likelyCause,
+                "Latest log: " + (diagnosis == null || diagnosis.latestLog() == null ? "none" : diagnosis.latestLog()),
+                "Latest crash report: " + (diagnosis == null || diagnosis.latestCrashReport() == null ? "none" : diagnosis.latestCrashReport()),
+                "Suggested fix: " + suggestedFix
+        );
+    }
+
+    private void appendExceptionDetails(Exception ex) {
+        if (ex == null) {
+            return;
+        }
+        StringWriter buffer = new StringWriter();
+        ex.printStackTrace(new PrintWriter(buffer));
+        appendLog(buffer.toString().trim());
+    }
+
+    private CrashReportAnalyzer.DiagnosisReport resolveSelectedClientDiagnosis() {
+        try {
+            VersionEntry selected = versionsList == null ? null : versionsList.getSelectionModel().getSelectedItem();
+            if (selected == null) {
+                return null;
+            }
+            return crashReportAnalyzer.analyze(instanceDirFor(selected));
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private Node buildFailureDialogContent(String summary, String likelyCause, String suggestedFix, CrashReportAnalyzer.DiagnosisReport diagnosis) {
+        VBox root = new VBox(10,
+                detailSection("Summary", summary),
+                detailSection("Likely Cause", likelyCause),
+                detailSection("Suggested Fix", suggestedFix)
+        );
+        if (diagnosis != null) {
+            root.getChildren().add(detailSection("Diagnosis", diagnosis.formatForClipboard()));
+        }
+        root.setPadding(new Insets(4, 0, 0, 0));
+        root.setPrefWidth(620);
+        return root;
+    }
+
+    private VBox detailSection(String title, String body) {
+        Label heading = new Label(title);
+        heading.getStyleClass().add("selected-version");
+        TextArea content = new TextArea(body == null || body.isBlank() ? "None" : body.trim());
+        content.setEditable(false);
+        content.setWrapText(true);
+        content.setPrefRowCount(Math.max(2, Math.min(8, content.getText().split("\\R").length + 1)));
+        VBox box = new VBox(4, heading, content);
+        box.setMaxWidth(Double.MAX_VALUE);
+        return box;
+    }
+
+    private void showDiagnosisDialog(String title, CrashReportAnalyzer.DiagnosisReport diagnosis) {
+        ButtonType openLogButton = diagnosis.latestLog() == null
+                ? null
+                : new ButtonType("Open Latest Log", ButtonBar.ButtonData.RIGHT);
+        ButtonType openCrashButton = diagnosis.latestCrashReport() == null
+                ? null
+                : new ButtonType("Open Crash Report", ButtonBar.ButtonData.RIGHT);
+
+        Dialog<ButtonType> dialog = new Dialog<>();
+        dialog.setTitle(title);
+        dialog.setHeaderText(title);
+        List<ButtonType> buttons = new ArrayList<>();
+        buttons.add(ButtonType.CLOSE);
+        if (openLogButton != null) {
+            buttons.add(openLogButton);
+        }
+        if (openCrashButton != null) {
+            buttons.add(openCrashButton);
+        }
+        dialog.getDialogPane().getButtonTypes().setAll(buttons);
+        dialog.getDialogPane().setContent(buildFailureDialogContent(
+                diagnosis.summary(),
+                formatList(diagnosis.likelyCauses()),
+                formatList(diagnosis.suggestedFixes()),
+                diagnosis
+        ));
+        ButtonType result = dialog.showAndWait().orElse(ButtonType.CLOSE);
+        if (openLogButton != null && result == openLogButton) {
+            openDesktopPath(diagnosis.latestLog(), "Opened latest log");
+        } else if (openCrashButton != null && result == openCrashButton) {
+            openDesktopPath(diagnosis.latestCrashReport(), "Opened latest crash report");
+        }
+    }
+
+    private String formatList(List<String> values) {
+        if (values == null || values.isEmpty()) {
+            return "";
+        }
+        return values.stream()
+                .filter(value -> value != null && !value.isBlank())
+                .map(value -> "- " + value.trim())
+                .reduce((left, right) -> left + System.lineSeparator() + right)
+                .orElse("");
+    }
+
+    private void openDesktopPath(Path path, String successStatus) {
+        if (path == null || !Files.exists(path)) {
+            setStatus("Nothing to open.", 0);
+            return;
+        }
+        io.submit(() -> {
+            try {
+                if (!Desktop.isDesktopSupported()) {
+                    throw new IllegalStateException("Desktop integration is not supported on this system.");
+                }
+                Desktop.getDesktop().open(path.toFile());
+                setStatus(successStatus, 0);
+            } catch (Exception ex) {
+                fail(ex);
+            }
         });
     }
 

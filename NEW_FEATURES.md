@@ -37,13 +37,13 @@ When that phrase is used, the implementation target is the full unchecked backlo
 - [ ] Add download/install actions from the preview window into the correct profile `mods` folder.
 - [ ] Show mod details before install: name, author, version, supported game versions, supported loaders, side support, and dependencies when available.
 
-### 3. Mod Management
+### 3. Shared Mod / Content Safety
 
-- [ ] Add a per-profile mod list in the launcher UI.
-- [ ] Allow install, remove, open folder, and refresh actions for mods.
-- [ ] Allow enabling/disabling mods without deleting them.
-- [ ] Detect duplicate or obviously incompatible mod jars and warn before launch.
-- [ ] Add update checking for already installed mods from supported providers.
+- [ ] Keep client mods/content in a shared workspace instead of per-profile instance folders.
+- [ ] Warn before launch when the shared mods folder contains obviously incompatible jars for the selected loader or Minecraft version.
+- [ ] Warn when client-only mods are about to be used on a server flow, or server-only mods on a client flow.
+- [ ] Add dependency-aware install/update checks during mod downloads instead of building a full per-profile mod manager.
+- [ ] Add lightweight duplicate/conflict detection for jars in the shared mods folder.
 
 ### 4. Server-Specific Improvements
 
@@ -72,11 +72,99 @@ When that phrase is used, the implementation target is the full unchecked backlo
 - [ ] Add retry, cancel, and queued job handling for installs/downloads instead of only one-shot background tasks.
 - [ ] Expand the profile model beyond `id/type/url/releaseTime` so profiles can carry richer metadata.
 - [ ] Add profile metadata such as icon, notes, tags, favorite state, grouping, and playtime tracking.
+- [x] Collapse client data into a shared workspace instead of per-version instance folders.
+- [x] Remove manual custom-version creation from the main launcher flow.
+- [ ] Finish removing remaining custom-version terminology and dead code paths.
 - [ ] Add backup/snapshot/restore flows before destructive actions like deleting versions, changing loaders, or moving worlds.
 - [ ] Add crash-report and log tooling, including quick-open actions for logs/crash reports and basic diagnosis of likely failures.
 - [ ] Upgrade Java runtime management beyond scanning `C:/Program Files/Java`, including better discovery, version matching, and optional runtime download/install flows.
 - [ ] Add embedded web support infrastructure (`javafx.web`) so in-app web preview/news/browser features are actually possible.
 - [ ] Refactor the oversized `LimecraftApp` into smaller UI/service components before piling on major new features.
+
+### 7. Portability / Shell UX / Self-Update
+
+- [x] Keep Limecraft portable-first for development and local testing instead of forcing everything into `%USERPROFILE%/.limecraft`.
+- [x] Add a clear storage-mode model:
+  - portable mode: keep launcher state relative to the executable/app folder
+  - user-profile mode: optional fallback for installed/non-portable setups
+- [x] Add a custom undecorated window topbar with:
+  - app title/branding
+  - minimize button
+  - maximize/fullscreen toggle
+  - close button
+- [x] Move the update indicator into the custom topbar instead of burying it elsewhere in the UI.
+- [x] Check for launcher updates on startup.
+- [x] When an update is available, show a topbar icon/button with update state and target version.
+- [x] Use safe update staging:
+  - download updates into a temp sibling folder
+  - verify the downloaded package before swap
+  - only replace the live packaged app after verification succeeds
+- [x] Add a self-update flow that:
+  - closes Limecraft
+  - downloads the new packaged build
+  - replaces the current packaged app image
+  - relaunches the updated app
+- [x] Treat the updater as app-image replacement, not lone-`exe` replacement, because the current Windows package depends on `app/` and `runtime/`.
+- [x] Add topbar status icons for:
+  - update available
+  - downloads/jobs running
+  - current launcher/account state
+  - recent launcher error state
+
+### 8. Diagnostics / Suggested Fixes
+
+- [x] Keep dumping the real raw output/log text for failed installs and launches.
+- [x] Add a structured "Suggested Fix" panel under failures instead of only showing raw logs.
+- [x] Reuse existing loader-specific diagnostics where they already exist instead of duplicating weaker generic guesses.
+- [x] Add rule-based suggestions for common problems:
+  - wrong Java version
+  - wrong loader family
+  - wrong Minecraft version
+  - missing dependency
+  - client-only mod on server
+  - server-only mod on client
+  - broken/incomplete download
+- [x] Make install/launch error dialogs include:
+  - short summary
+  - likely cause
+  - suggested fix
+  - button to open the relevant log/crash file
+- [x] When a launcher-side error occurs, show a dedicated "Report Launcher Error" action/button.
+- [x] Make the report action optional and link directly to the GitHub problems/issues page for the repo.
+- [x] Include enough context for manual reporting:
+  - launcher version
+  - active profile/version if relevant
+  - short error summary
+  - easy path to logs/crash files
+
+### 9. Release Automation
+
+- [x] Keep release automation as a repo-local batch script, not a separate external toolchain requirement.
+- [x] Add a dedicated release batch script that:
+  - builds/package the Windows app image
+  - creates the release zip
+  - verifies the packaged output is present
+  - can tag/push/upload a GitHub release when credentials are available
+- [x] Make the release script print the full command output and final artifact paths clearly.
+- [x] Make the release script fail loudly with actionable suggestions instead of just stopping on errors.
+- [x] Add release sanity checks before upload:
+  - no `launcher.properties`
+  - no saved tokens/account cache
+  - no obvious local path/user-name leakage in packaged config files
+
+### 10. Codebase Separation
+
+- [x] Split `LimecraftApp` into smaller modules instead of continuing to grow a monolith.
+- [x] Extract a launcher shell/window module for:
+  - topbar
+  - tab host
+  - shared status/progress
+  - update indicator
+- [ ] Extract client-profile UI/controller code from server-profile UI/controller code.
+- [ ] Extract mod browser/mod management UI into its own package.
+- [ ] Extract install/update/download orchestration into dedicated services.
+- [x] Extract settings/account/update/release concerns into separate services/controllers.
+- [ ] Keep the refactor incremental so the app still builds and ships after each slice.
 
 ## Assumptions For "All Modloaders"
 
@@ -104,8 +192,12 @@ These are the parts still not fully defined yet:
 - Whether plugin server platforms count as part of the same feature set
 - Whether CurseForge should be included alongside Modrinth
 - Whether the mod browser should be a pure embedded web page, a launcher-native UI backed by web APIs, or both
+- Whether the shared client workspace should ever be optional again, or remain the only client mode
 - Whether multi-account support should include offline account presets too
 - Whether runtime download/install should be fully launcher-managed or only help the user find the right Java
+- Whether portable mode should be the default when launching from a zip/app-image build
+- Whether self-update should pull from GitHub Releases directly or from a separate update manifest
+- Whether the custom topbar should mimic native Windows behavior or deliberately use a branded launcher style
 
 ## Recommended Implementation Order
 
@@ -114,6 +206,8 @@ These are the parts still not fully defined yet:
 3. Make server launching loader-aware instead of assuming one vanilla `server.jar`.
 4. Add secure account storage/multi-account support and persist real server profiles.
 5. Add repair/verify/backup/runtime-management foundations.
-6. Add the embedded mod browser and install flow.
-7. Add per-profile mod management, sync, updates, and sharing features.
-8. Split `LimecraftApp` into smaller components as the feature set grows, or move that refactor earlier if implementation starts fighting the current structure.
+6. Split `LimecraftApp` into smaller components before the next big UI wave.
+7. Add the custom topbar + startup update indicator + portable storage model.
+8. Add the embedded mod browser and install flow.
+9. Add shared-workspace compatibility checks, dependency-aware installs, sync, updates, and sharing features.
+10. Add self-update + release-batch automation once packaging/layout conventions are stable.

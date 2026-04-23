@@ -6,6 +6,7 @@ website/
 # Packaging output
 dist/
 dist*/
+*.zip
 
 # Logs
 *.log
@@ -21,3 +22,8 @@ Thumbs.db
 
 # Local generated icon/cache
 limecraft.generated.ico
+
+# Local build/output junk
+bin/
+data/
+src - Copy/
