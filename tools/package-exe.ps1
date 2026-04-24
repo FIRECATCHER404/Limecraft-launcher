@@ -1,6 +1,6 @@
 param(
     [string]$Name = "Limecraft",
-    [string]$Version = "1.4",
+    [string]$Version = "1.5",
     [string]$Dest = "dist"
 )
 

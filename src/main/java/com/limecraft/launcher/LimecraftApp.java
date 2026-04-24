@@ -1756,6 +1756,10 @@ public final class LimecraftApp extends Application {
         return local;
     }
 
+    private Path activeInstanceDirFor(VersionEntry version) {
+        return existingInstanceDirFor(version);
+    }
+
     private Path worldsDirFor(VersionEntry version) {
         return instanceDirFor(version).resolve("saves");
     }
@@ -1778,24 +1782,8 @@ public final class LimecraftApp extends Application {
         return Files.isDirectory(existingWorldsDirFor(version));
     }
 
-    private void ensureInstanceAvailableLocally(VersionEntry version) throws Exception {
-        if (version == null || SHARED_CLIENT_WORKSPACE) {
-            return;
-        }
-        Path localDir = instanceDirFor(version);
-        if (Files.isDirectory(localDir)) {
-            return;
-        }
-        Path legacyDir = legacyInstanceDirForId(version.id());
-        if (!Files.isDirectory(legacyDir)) {
-            return;
-        }
-        copyDirectory(legacyDir, localDir);
-        appendLog("[Limecraft] Imported legacy instance folder for " + version.id());
-    }
-
     private InstanceSettings loadInstanceSettings(VersionEntry version) {
-        Path file = existingInstanceDirFor(version).resolve("instance.properties");
+        Path file = activeInstanceDirFor(version).resolve("instance.properties");
         if (!Files.exists(file)) {
         return new InstanceSettings("", "", false);
         }
@@ -1815,7 +1803,7 @@ public final class LimecraftApp extends Application {
         String javaPath = settings.javaPath() == null ? "" : settings.javaPath().trim();
         String xmx = settings.xmx() == null ? "" : settings.xmx().trim();
         boolean hideCustomSuffix = settings.hideCustomSuffix();
-        Path dir = instanceDirFor(version);
+        Path dir = activeInstanceDirFor(version);
         Path file = dir.resolve("instance.properties");
         if (javaPath.isBlank() && xmx.isBlank() && !hideCustomSuffix) {
             try {
@@ -1873,7 +1861,7 @@ public final class LimecraftApp extends Application {
         notesArea.setPromptText("Profile notes");
         notesArea.setWrapText(true);
         notesArea.setPrefRowCount(5);
-        Label pathLabel = new Label(instanceDirFor(version).toString());
+        Label pathLabel = new Label(activeInstanceDirFor(version).toString());
         pathLabel.getStyleClass().add("selected-version");
         Label playtimeLabel = new Label("Playtime: " + formatDuration(metadata.playTimeSeconds()));
         playtimeLabel.getStyleClass().add("selected-version");
@@ -2160,7 +2148,7 @@ public final class LimecraftApp extends Application {
             setStatus("Mods folder is only available for modded profiles.", 0);
             return;
         }
-        Path instanceDir = instanceDirFor(version);
+        Path instanceDir = activeInstanceDirFor(version);
         Path modsDir = instanceDir.resolve("mods");
         io.submit(() -> {
             try {
@@ -2363,35 +2351,12 @@ public final class LimecraftApp extends Application {
         return localJson;
     }
 
-    private void ensureManagedVersionAvailableLocally(VersionEntry version) throws Exception {
-        if (version == null) {
-            return;
-        }
-        ensureVersionAvailableLocally(version.id());
-    }
-
-    private void ensureVersionAvailableLocally(String versionId) throws Exception {
-        if (versionId == null || versionId.isBlank()) {
-            return;
-        }
-        Path localVersionDir = gameDir.resolve("versions").resolve(versionId);
-        if (Files.isDirectory(localVersionDir)) {
-            return;
-        }
-        Path sourceVersionDir = appPaths.legacyDataDir().resolve("versions").resolve(versionId);
-        if (!Files.isDirectory(sourceVersionDir)) {
-            return;
-        }
-        copyDirectory(sourceVersionDir, localVersionDir);
-        appendLog("[Limecraft] Imported version " + versionId + " into " + appPaths.storageModeLabel() + " storage");
-    }
-
     private Path logsDirFor(VersionEntry version) {
-        return instanceDirFor(version).resolve("logs");
+        return activeInstanceDirFor(version).resolve("logs");
     }
 
     private Path crashReportsDirFor(VersionEntry version) {
-        return instanceDirFor(version).resolve("crash-reports");
+        return activeInstanceDirFor(version).resolve("crash-reports");
     }
 
     private void openLogsFolder(VersionEntry version) {
@@ -3044,7 +3009,6 @@ public final class LimecraftApp extends Application {
             return serverJar;
         }
 
-        ensureManagedVersionAvailableLocally(version);
         JsonObject localMeta = loadVersionMetaQuiet(version.id());
         if ((version.url() == null || version.url().isBlank()) && localMeta != null) {
             String side = detectProfileSideFromMetadata(localMeta);
@@ -3639,8 +3603,6 @@ public final class LimecraftApp extends Application {
         }
         io.submit(() -> {
             try {
-                ensureVersionAvailableLocally(selected.id());
-                Path versionDir = gameDir.resolve("versions").resolve(selected.id());
                 Path versionJson = findVersionJson(selected.id());
 
                 if (!Files.exists(versionJson)) {
@@ -3683,7 +3645,6 @@ public final class LimecraftApp extends Application {
                     saveSettings();
                 }
 
-                ensureInstanceAvailableLocally(selected);
                 InstanceSettings instanceSettings = loadInstanceSettings(selected);
                 String javaPath = instanceSettings.javaPath().isBlank()
                         ? javaPathField.getText().trim()
@@ -3696,6 +3657,7 @@ public final class LimecraftApp extends Application {
                 Process process = launchService.launch(
                         selected.id(),
                         meta,
+                        activeInstanceDirFor(selected),
                         accountToUse,
                         offlineUsername,
                         javaPath,
@@ -3742,7 +3704,6 @@ public final class LimecraftApp extends Application {
                 if (selected.url() != null && !selected.url().isBlank()) {
                     installService.installVersion(selected, this::setStatus);
                 } else {
-                    ensureManagedVersionAvailableLocally(selected);
                     JsonObject meta = loadVersionMetaQuiet(selected.id());
                     if (meta == null) {
                         throw new IllegalStateException("No local metadata exists for " + selected.id() + ".");
@@ -4778,7 +4739,7 @@ public final class LimecraftApp extends Application {
         if ("server".equalsIgnoreCase(side)) {
             return serverDirFor(version).resolve("mods");
         }
-        return instanceDirFor(version).resolve("mods");
+        return activeInstanceDirFor(version).resolve("mods");
     }
 
     private void setStatus(String text, double value) {
@@ -5089,7 +5050,6 @@ public final class LimecraftApp extends Application {
             throw new IllegalStateException("Cyclic version inheritance detected at " + parentId);
         }
 
-        ensureVersionAvailableLocally(parentId);
         Path parentJson = findVersionJson(parentId);
         if (!Files.exists(parentJson)) {
             VersionEntry parent = findVersionById(parentId);

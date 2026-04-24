@@ -36,7 +36,7 @@ public final class MinecraftLaunchService {
         this.legacyDataDir = legacyDataDir == null ? gameDir : legacyDataDir.toAbsolutePath().normalize();
     }
 
-    public Process launch(String versionId, JsonObject versionMeta, MinecraftAccount account, String offlineUsername, String javaPath, String xmx, boolean includeLimecraftSuffix, boolean hideCustomSuffix) throws Exception {
+    public Process launch(String versionId, JsonObject versionMeta, Path instanceDir, MinecraftAccount account, String offlineUsername, String javaPath, String xmx, boolean includeLimecraftSuffix, boolean hideCustomSuffix) throws Exception {
         String os = detectOs();
         JsonObject effectiveMeta = resolveEffectiveMeta(versionId, versionMeta, new HashSet<>());
         Path gameJar = resolveGameJar(versionId, versionMeta, new HashSet<>());
@@ -44,7 +44,9 @@ public final class MinecraftLaunchService {
             throw new IllegalStateException("Missing client jar for " + versionId + " (or its parent version)");
         }
 
-        Path instanceDir = gameDir.resolve("instances").resolve(safeFolderName(versionId));
+        if (instanceDir == null) {
+            instanceDir = gameDir.resolve("instances").resolve(safeFolderName(versionId));
+        }
         Files.createDirectories(instanceDir);
 
         List<String> classpathEntries = buildClasspathEntries(effectiveMeta, gameJar, os);
