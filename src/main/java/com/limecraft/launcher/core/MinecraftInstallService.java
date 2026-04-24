@@ -14,6 +14,8 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Locale;
+import java.util.Properties;
 
 public final class MinecraftInstallService {
     private static final String MANIFEST_URL = "https://launchermeta.mojang.com/mc/game/version_manifest_v2.json";
@@ -24,11 +26,13 @@ public final class MinecraftInstallService {
     private final HttpClient http;
     private final Downloader downloader;
     private final Path gameDir;
+    private final Path legacyDataDir;
 
-    public MinecraftInstallService(HttpClient http, Path gameDir) {
+    public MinecraftInstallService(HttpClient http, Path gameDir, Path legacyDataDir) {
         this.http = http;
         this.downloader = new Downloader(http.raw());
         this.gameDir = gameDir;
+        this.legacyDataDir = legacyDataDir == null ? gameDir : legacyDataDir.toAbsolutePath().normalize();
     }
 
     public List<VersionEntry> listVersions() throws IOException {
@@ -159,6 +163,7 @@ public final class MinecraftInstallService {
         listener.onProgress("Downloading assets", 0.7);
         downloadAssets(meta, listener);
 
+        writeDependencyMarker(meta);
         listener.onProgress("Install complete", 1.0);
         return meta;
     }
@@ -172,7 +177,33 @@ public final class MinecraftInstallService {
             listener.onProgress("Downloading assets", 0.7);
             downloadAssets(versionMeta, listener);
         }
+        writeDependencyMarker(versionMeta);
         listener.onProgress("Install complete", 1.0);
+    }
+
+    public boolean installMetadataDependenciesIfNeeded(JsonObject versionMeta, ProgressListener listener) throws IOException {
+        if (versionMeta == null) {
+            return false;
+        }
+        if (dependencyMarkerCurrent(versionMeta)) {
+            return false;
+        }
+        if (dependenciesAlreadyAvailable(versionMeta)) {
+            writeDependencyMarker(versionMeta);
+            return false;
+        }
+        installMetadataDependencies(versionMeta, listener);
+        return true;
+    }
+
+    public void invalidateDependencyCache(String versionId) {
+        if (versionId == null || versionId.isBlank()) {
+            return;
+        }
+        try {
+            Files.deleteIfExists(dependencyMarkerPath(versionId));
+        } catch (IOException ignored) {
+        }
     }
 
     private void downloadLibraries(JsonObject versionMeta, ProgressListener listener) throws IOException {
@@ -191,7 +222,7 @@ public final class MinecraftInstallService {
             LibraryArtifact artifact = resolveMainArtifact(lib);
             if (artifact != null) {
                 Path out = gameDir.resolve("libraries").resolve(artifact.path());
-                if (!java.nio.file.Files.exists(out)) {
+                if (!Files.exists(out) && resolveExistingLibraryPath(artifact.path()) == null) {
                     downloader.downloadTo(artifact.url(), out);
                 }
             }
@@ -199,7 +230,7 @@ public final class MinecraftInstallService {
             LibraryArtifact nativeArtifact = resolveNativeArtifact(lib, os);
             if (nativeArtifact != null) {
                 Path out = gameDir.resolve("libraries").resolve(nativeArtifact.path());
-                if (!java.nio.file.Files.exists(out)) {
+                if (!Files.exists(out) && resolveExistingLibraryPath(nativeArtifact.path()) == null) {
                     downloader.downloadTo(nativeArtifact.url(), out);
                 }
             }
@@ -356,7 +387,7 @@ public final class MinecraftInstallService {
             String prefix = hash.substring(0, 2);
             String objectUrl = "https://resources.download.minecraft.net/" + prefix + "/" + hash;
             Path out = gameDir.resolve("assets").resolve("objects").resolve(prefix).resolve(hash);
-            if (!java.nio.file.Files.exists(out)) {
+            if (!Files.exists(out) && resolveExistingAssetObjectPath(hash) == null) {
                 downloader.downloadTo(objectUrl, out);
             }
             if (i % 150 == 0 || i == total) {
@@ -398,6 +429,194 @@ public final class MinecraftInstallService {
         if (name.contains("win")) return "windows";
         if (name.contains("mac")) return "osx";
         return "linux";
+    }
+
+    private boolean dependencyMarkerCurrent(JsonObject versionMeta) {
+        String versionId = readString(versionMeta, "id");
+        if (versionId.isBlank()) {
+            return false;
+        }
+        Path marker = dependencyMarkerPath(versionId);
+        if (!Files.isRegularFile(marker)) {
+            return false;
+        }
+        Properties props = new Properties();
+        try (var in = Files.newInputStream(marker)) {
+            props.load(in);
+        } catch (Exception ex) {
+            return false;
+        }
+        String expected = dependencySignature(versionMeta);
+        String actual = props.getProperty("signature", "").trim();
+        return expected.equals(actual) && requiredDependencyFilesPresent(versionMeta);
+    }
+
+    private boolean dependenciesAlreadyAvailable(JsonObject versionMeta) {
+        if (!requiredLibraryFilesPresent(versionMeta)) {
+            return false;
+        }
+        return requiredAssetFilesPresent(versionMeta);
+    }
+
+    private boolean requiredDependencyFilesPresent(JsonObject versionMeta) {
+        return requiredLibraryFilesPresent(versionMeta) && cheapAssetIndexPresent(versionMeta);
+    }
+
+    private boolean requiredLibraryFilesPresent(JsonObject versionMeta) {
+        String os = detectOs();
+        if (versionMeta.has("libraries") && versionMeta.get("libraries").isJsonArray()) {
+            for (JsonElement libEl : versionMeta.getAsJsonArray("libraries")) {
+                JsonObject lib = libEl.getAsJsonObject();
+                if (!isLibraryAllowed(lib, os)) {
+                    continue;
+                }
+                LibraryArtifact artifact = resolveMainArtifact(lib);
+                if (artifact != null && resolveExistingLibraryPath(artifact.path()) == null) {
+                    return false;
+                }
+                LibraryArtifact nativeArtifact = resolveNativeArtifact(lib, os);
+                if (nativeArtifact != null && resolveExistingLibraryPath(nativeArtifact.path()) == null) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    private boolean cheapAssetIndexPresent(JsonObject versionMeta) {
+        if (versionMeta.has("assetIndex") && versionMeta.get("assetIndex").isJsonObject()) {
+            String assetId = readString(versionMeta.getAsJsonObject("assetIndex"), "id");
+            if (assetId.isBlank()) {
+                return false;
+            }
+            if (resolveExistingAssetIndexPath(assetId) == null) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean requiredAssetFilesPresent(JsonObject versionMeta) {
+        if (!versionMeta.has("assetIndex") || !versionMeta.get("assetIndex").isJsonObject()) {
+            return true;
+        }
+        String assetId = readString(versionMeta.getAsJsonObject("assetIndex"), "id");
+        if (assetId.isBlank()) {
+            return false;
+        }
+        Path indexPath = resolveExistingAssetIndexPath(assetId);
+        if (indexPath == null) {
+            return false;
+        }
+        JsonObject indexJson;
+        try {
+            indexJson = JsonParser.parseString(Files.readString(indexPath, StandardCharsets.UTF_8)).getAsJsonObject();
+        } catch (Exception ex) {
+            return false;
+        }
+        if (!indexJson.has("objects") || !indexJson.get("objects").isJsonObject()) {
+            return false;
+        }
+        for (var entry : indexJson.getAsJsonObject("objects").entrySet()) {
+            JsonObject object = entry.getValue().getAsJsonObject();
+            String hash = readString(object, "hash");
+            if (hash.isBlank() || resolveExistingAssetObjectPath(hash) == null) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private void writeDependencyMarker(JsonObject versionMeta) throws IOException {
+        String versionId = readString(versionMeta, "id");
+        if (versionId.isBlank()) {
+            return;
+        }
+        Path marker = dependencyMarkerPath(versionId);
+        Files.createDirectories(marker.getParent());
+        Properties props = new Properties();
+        props.setProperty("signature", dependencySignature(versionMeta));
+        try (var out = Files.newOutputStream(marker)) {
+            props.store(out, "Limecraft dependency cache");
+        }
+    }
+
+    private Path dependencyMarkerPath(String versionId) {
+        String safe = versionId.replaceAll("[\\\\/:*?\"<>|]", "_");
+        return gameDir.resolve("cache").resolve("dependency-markers").resolve(safe + ".properties");
+    }
+
+    private Path resolveExistingLibraryPath(String relativePath) {
+        if (relativePath == null || relativePath.isBlank()) {
+            return null;
+        }
+        Path local = gameDir.resolve("libraries").resolve(relativePath);
+        if (Files.exists(local)) {
+            return local;
+        }
+        Path legacy = legacyDataDir.resolve("libraries").resolve(relativePath);
+        if (Files.exists(legacy)) {
+            return legacy;
+        }
+        return null;
+    }
+
+    private Path resolveExistingAssetIndexPath(String assetId) {
+        if (assetId == null || assetId.isBlank()) {
+            return null;
+        }
+        Path local = gameDir.resolve("assets").resolve("indexes").resolve(assetId + ".json");
+        if (Files.exists(local)) {
+            return local;
+        }
+        Path legacy = legacyDataDir.resolve("assets").resolve("indexes").resolve(assetId + ".json");
+        if (Files.exists(legacy)) {
+            return legacy;
+        }
+        return null;
+    }
+
+    private Path resolveExistingAssetObjectPath(String hash) {
+        if (hash == null || hash.isBlank() || hash.length() < 2) {
+            return null;
+        }
+        String prefix = hash.substring(0, 2);
+        Path local = gameDir.resolve("assets").resolve("objects").resolve(prefix).resolve(hash);
+        if (Files.exists(local)) {
+            return local;
+        }
+        Path legacy = legacyDataDir.resolve("assets").resolve("objects").resolve(prefix).resolve(hash);
+        if (Files.exists(legacy)) {
+            return legacy;
+        }
+        return null;
+    }
+
+    private String dependencySignature(JsonObject versionMeta) {
+        StringBuilder signature = new StringBuilder();
+        signature.append(readString(versionMeta, "id")).append('\n');
+        if (versionMeta.has("assetIndex") && versionMeta.get("assetIndex").isJsonObject()) {
+            JsonObject assetIndex = versionMeta.getAsJsonObject("assetIndex");
+            signature.append(readString(assetIndex, "id")).append('\n');
+            signature.append(readString(assetIndex, "url")).append('\n');
+        }
+        if (versionMeta.has("libraries") && versionMeta.get("libraries").isJsonArray()) {
+            for (JsonElement libEl : versionMeta.getAsJsonArray("libraries")) {
+                signature.append(libEl.toString()).append('\n');
+            }
+        }
+        return Integer.toHexString(signature.toString().hashCode()).toLowerCase(Locale.ROOT);
+    }
+
+    private String readString(JsonObject object, String key) {
+        if (object == null || key == null || key.isBlank() || !object.has(key)) {
+            return "";
+        }
+        try {
+            return object.get(key).getAsString();
+        } catch (Exception ex) {
+            return "";
+        }
     }
 
     @FunctionalInterface

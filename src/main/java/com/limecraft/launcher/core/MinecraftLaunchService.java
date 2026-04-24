@@ -29,9 +29,11 @@ import java.util.zip.ZipEntry;
 public final class MinecraftLaunchService {
     private static final Pattern JAVA_VERSION_QUOTED = Pattern.compile("\"([^\"]+)\"");
     private final Path gameDir;
+    private final Path legacyDataDir;
 
-    public MinecraftLaunchService(Path gameDir) {
+    public MinecraftLaunchService(Path gameDir, Path legacyDataDir) {
         this.gameDir = gameDir;
+        this.legacyDataDir = legacyDataDir == null ? gameDir : legacyDataDir.toAbsolutePath().normalize();
     }
 
     public Process launch(String versionId, JsonObject versionMeta, MinecraftAccount account, String offlineUsername, String javaPath, String xmx, boolean includeLimecraftSuffix, boolean hideCustomSuffix) throws Exception {
@@ -226,6 +228,12 @@ public final class MinecraftLaunchService {
     private JsonObject loadVersionMeta(String versionId) throws IOException {
         Path jsonPath = gameDir.resolve("versions").resolve(versionId).resolve(versionId + ".json");
         if (!Files.exists(jsonPath)) {
+            Path legacyJsonPath = legacyDataDir.resolve("versions").resolve(versionId).resolve(versionId + ".json");
+            if (Files.exists(legacyJsonPath)) {
+                jsonPath = legacyJsonPath;
+            }
+        }
+        if (!Files.exists(jsonPath)) {
             throw new IllegalStateException("Missing inherited version metadata for " + versionId);
         }
         return com.google.gson.JsonParser.parseString(Files.readString(jsonPath)).getAsJsonObject();
@@ -236,7 +244,7 @@ public final class MinecraftLaunchService {
             throw new IllegalStateException("Cyclic version inheritance detected at " + versionId);
         }
 
-        Path candidate = gameDir.resolve("versions").resolve(versionId).resolve(versionId + ".jar");
+        Path candidate = resolveExistingVersionJar(versionId);
         String parentId = readString(meta, "inheritsFrom");
         if (Files.exists(candidate) || parentId.isBlank()) {
             visiting.remove(versionId);
@@ -300,12 +308,12 @@ public final class MinecraftLaunchService {
     private Path resolveLibraryPath(JsonObject lib) {
         if (lib.has("downloads") && lib.getAsJsonObject("downloads").has("artifact")) {
             String rel = lib.getAsJsonObject("downloads").getAsJsonObject("artifact").get("path").getAsString();
-            return gameDir.resolve("libraries").resolve(rel);
+            return resolveExistingLibraryPath(rel);
         }
         if (!lib.has("name")) {
             return null;
         }
-        return gameDir.resolve("libraries").resolve(toMavenPath(lib.get("name").getAsString()));
+        return resolveExistingLibraryPath(toMavenPath(lib.get("name").getAsString()));
     }
 
     private String toMavenPath(String notation) {
@@ -547,8 +555,9 @@ public final class MinecraftLaunchService {
         vars.put("auth_player_name", username);
         vars.put("version_name", versionId);
         vars.put("game_directory", instanceDir.toAbsolutePath().toString());
-        vars.put("assets_root", gameDir.resolve("assets").toAbsolutePath().toString());
-        vars.put("game_assets", gameDir.resolve("assets").toAbsolutePath().toString());
+        Path assetsRoot = resolveAssetsRoot(meta);
+        vars.put("assets_root", assetsRoot.toAbsolutePath().toString());
+        vars.put("game_assets", assetsRoot.toAbsolutePath().toString());
         vars.put("assets_index_name", resolveAssetsIndexName(meta));
         vars.put("auth_uuid", uuid);
         vars.put("auth_access_token", token);
@@ -834,6 +843,42 @@ public final class MinecraftLaunchService {
             }
         }
         return "legacy";
+    }
+
+    private Path resolveExistingVersionJar(String versionId) {
+        Path local = gameDir.resolve("versions").resolve(versionId).resolve(versionId + ".jar");
+        if (Files.exists(local)) {
+            return local;
+        }
+        Path legacy = legacyDataDir.resolve("versions").resolve(versionId).resolve(versionId + ".jar");
+        if (Files.exists(legacy)) {
+            return legacy;
+        }
+        return local;
+    }
+
+    private Path resolveExistingLibraryPath(String relativePath) {
+        Path local = gameDir.resolve("libraries").resolve(relativePath);
+        if (Files.exists(local)) {
+            return local;
+        }
+        Path legacy = legacyDataDir.resolve("libraries").resolve(relativePath);
+        if (Files.exists(legacy)) {
+            return legacy;
+        }
+        return local;
+    }
+
+    private Path resolveAssetsRoot(JsonObject meta) {
+        Path legacyAssets = legacyDataDir.resolve("assets");
+        if (!legacyAssets.equals(gameDir.resolve("assets")) && Files.isDirectory(legacyAssets)) {
+            String assetIndex = resolveAssetsIndexName(meta);
+            Path legacyIndex = legacyAssets.resolve("indexes").resolve(assetIndex + ".json");
+            if (Files.exists(legacyIndex)) {
+                return legacyAssets;
+            }
+        }
+        return gameDir.resolve("assets");
     }
 
     private String safeFolderName(String versionId) {

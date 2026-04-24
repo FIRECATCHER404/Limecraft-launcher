@@ -107,8 +107,8 @@ public final class LimecraftApp extends Application {
     private final LauncherJobExecutor io = new LauncherJobExecutor(4);
     private final Path gameDir = appPaths.dataDir();
     private final HttpClient http = new HttpClient();
-    private final MinecraftInstallService installService = new MinecraftInstallService(http, gameDir);
-    private final MinecraftLaunchService launchService = new MinecraftLaunchService(gameDir);
+    private final MinecraftInstallService installService = new MinecraftInstallService(http, gameDir, appPaths.legacyDataDir());
+    private final MinecraftLaunchService launchService = new MinecraftLaunchService(gameDir, appPaths.legacyDataDir());
     private final AccountStore accountStore = new AccountStore(gameDir, new WindowsDpapiTokenStore(gameDir));
     private final ProfileMetadataStore profileMetadataStore = new ProfileMetadataStore(gameDir);
     private final ServerProfileStore serverProfileStore = new ServerProfileStore();
@@ -2364,19 +2364,26 @@ public final class LimecraftApp extends Application {
     }
 
     private void ensureManagedVersionAvailableLocally(VersionEntry version) throws Exception {
-        if (version == null || version.url() != null && !version.url().isBlank()) {
+        if (version == null) {
             return;
         }
-        Path localVersionDir = gameDir.resolve("versions").resolve(version.id());
+        ensureVersionAvailableLocally(version.id());
+    }
+
+    private void ensureVersionAvailableLocally(String versionId) throws Exception {
+        if (versionId == null || versionId.isBlank()) {
+            return;
+        }
+        Path localVersionDir = gameDir.resolve("versions").resolve(versionId);
         if (Files.isDirectory(localVersionDir)) {
             return;
         }
-        Path sourceVersionDir = appPaths.legacyDataDir().resolve("versions").resolve(version.id());
+        Path sourceVersionDir = appPaths.legacyDataDir().resolve("versions").resolve(versionId);
         if (!Files.isDirectory(sourceVersionDir)) {
             return;
         }
         copyDirectory(sourceVersionDir, localVersionDir);
-        appendLog("[Limecraft] Imported managed loader profile " + version.id() + " into " + appPaths.storageModeLabel() + " storage");
+        appendLog("[Limecraft] Imported version " + versionId + " into " + appPaths.storageModeLabel() + " storage");
     }
 
     private Path logsDirFor(VersionEntry version) {
@@ -3632,10 +3639,9 @@ public final class LimecraftApp extends Application {
         }
         io.submit(() -> {
             try {
-                ensureManagedVersionAvailableLocally(selected);
+                ensureVersionAvailableLocally(selected.id());
                 Path versionDir = gameDir.resolve("versions").resolve(selected.id());
-                Path versionJson = versionDir.resolve(selected.id() + ".json");
-                Path versionJar = versionDir.resolve(selected.id() + ".jar");
+                Path versionJson = findVersionJson(selected.id());
 
                 if (!Files.exists(versionJson)) {
                     if (selected.url() == null || selected.url().isBlank()) {
@@ -3647,7 +3653,7 @@ public final class LimecraftApp extends Application {
                 }
 
                 JsonObject meta = JsonParser.parseString(Files.readString(versionJson)).getAsJsonObject();
-                if (!Files.exists(versionJar) && !meta.has("inheritsFrom")) {
+                if (!versionJarExists(selected.id()) && !meta.has("inheritsFrom")) {
                     if (selected.url() == null || selected.url().isBlank()) {
                         throw new IllegalStateException("Missing client jar for " + selected.id());
                     }
@@ -3656,8 +3662,7 @@ public final class LimecraftApp extends Application {
                     meta = JsonParser.parseString(Files.readString(versionJson)).getAsJsonObject();
                 }
                 if (meta.has("inheritsFrom")) {
-                    setStatus("Checking inherited dependencies for " + selected.id() + "...", 0.55);
-                    installService.installMetadataDependencies(meta, this::setStatus);
+                    installService.installMetadataDependenciesIfNeeded(meta, this::setStatus);
                     ensureInheritedDependenciesInstalled(meta);
                 }
 
@@ -3733,6 +3738,7 @@ public final class LimecraftApp extends Application {
         io.submit(() -> {
             try {
                 setStatus("Repairing " + selected.id() + "...", 0.2);
+                installService.invalidateDependencyCache(selected.id());
                 if (selected.url() != null && !selected.url().isBlank()) {
                     installService.installVersion(selected, this::setStatus);
                 } else {
@@ -5083,8 +5089,8 @@ public final class LimecraftApp extends Application {
             throw new IllegalStateException("Cyclic version inheritance detected at " + parentId);
         }
 
-        Path parentJson = gameDir.resolve("versions").resolve(parentId).resolve(parentId + ".json");
-        Path parentJar = gameDir.resolve("versions").resolve(parentId).resolve(parentId + ".jar");
+        ensureVersionAvailableLocally(parentId);
+        Path parentJson = findVersionJson(parentId);
         if (!Files.exists(parentJson)) {
             VersionEntry parent = findVersionById(parentId);
             if (parent == null || parent.url() == null || parent.url().isBlank()) {
@@ -5092,7 +5098,7 @@ public final class LimecraftApp extends Application {
             }
             setStatus("Installing inherited base " + parentId + "...", 0.4);
             installService.installVersion(parent, this::setStatus);
-        } else if (!Files.exists(parentJar)) {
+        } else if (!versionJarExists(parentId)) {
             VersionEntry parent = findVersionById(parentId);
             if (parent != null && parent.url() != null && !parent.url().isBlank()) {
                 setStatus("Installing missing inherited jar/assets for " + parentId + "...", 0.45);
@@ -5101,7 +5107,7 @@ public final class LimecraftApp extends Application {
         }
 
         JsonObject parentMeta = JsonParser.parseString(Files.readString(parentJson)).getAsJsonObject();
-        installService.installMetadataDependencies(parentMeta, this::setStatus);
+        installService.installMetadataDependenciesIfNeeded(parentMeta, this::setStatus);
         ensureInheritedDependenciesInstalled(parentMeta, visiting);
         visiting.remove(parentId);
     }
