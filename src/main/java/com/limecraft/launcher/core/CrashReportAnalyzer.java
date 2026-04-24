@@ -54,11 +54,11 @@ public final class CrashReportAnalyzer {
         }
         if (containsAny(haystack, "fabric loader", "requires fabric", "fabric mod")) {
             likelyCauses.add("At least one mod expects Fabric or a Fabric-compatible environment.");
-            suggestedFixes.add("Use a Fabric-compatible profile, or remove Fabric-only mods from the shared mods folder.");
+            suggestedFixes.add("Use a Fabric-compatible profile, or remove Fabric-only mods from this version's mods folder.");
         }
         if (containsAny(haystack, "forge", "modloadingerror", "neoforge", "mods.toml")) {
             likelyCauses.add("Forge or NeoForge reported an invalid or incompatible mod load.");
-            suggestedFixes.add("Verify the loader family and Minecraft version match the mods in the shared folder.");
+            suggestedFixes.add("Verify the loader family and Minecraft version match the mods in this version's mods folder.");
         }
         if (containsAny(haystack, "depends on", "missing mandatory dependency", "requires mod")) {
             likelyCauses.add("A required mod dependency is missing.");
@@ -86,7 +86,7 @@ public final class CrashReportAnalyzer {
         }
         if (containsAny(haystack, "zip end header not found", "unexpected end of zlib input stream", "checksum", "corrupt", "invalid or corrupt jarfile")) {
             likelyCauses.add("A download or jar file looks incomplete or corrupted.");
-            suggestedFixes.add("Run Repair Files and replace any damaged jars in the shared folders.");
+            suggestedFixes.add("Run Repair Files and replace any damaged jars in this version's folders.");
         }
         if (containsAny(haystack, "glfw error", "opengl", "pixel format")) {
             likelyCauses.add("Graphics initialization failed.");

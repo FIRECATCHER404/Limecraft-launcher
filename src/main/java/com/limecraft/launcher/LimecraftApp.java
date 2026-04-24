@@ -65,6 +65,7 @@ import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
@@ -100,7 +101,7 @@ public final class LimecraftApp extends Application {
     private static final String MICROSOFT_CLIENT_ID = "ba5cdd7c-bc36-4702-9613-35f14f83e52c";
     private static final String JAVA_PATCH_NOTES_INDEX_URL = "https://launchercontent.mojang.com/v2/javaPatchNotes.json";
     private static final String JAVA_PATCH_NOTES_BASE_URL = "https://launchercontent.mojang.com/v2/";
-    private static final boolean SHARED_CLIENT_WORKSPACE = true;
+    private static final boolean SHARED_CLIENT_WORKSPACE = false;
 
     private final AppPaths appPaths = AppPaths.detect();
     private final LauncherJobExecutor io = new LauncherJobExecutor(4);
@@ -184,10 +185,13 @@ public final class LimecraftApp extends Application {
     private volatile boolean microsoftSignInInProgress;
     private volatile boolean loadingServerSettings;
     private volatile boolean legacyManagedVersionImportAttempted;
+    private volatile boolean legacyInstanceImportAttempted;
     private boolean includeLimecraftSuffix = true;
     private final List<String> recentVersions = new ArrayList<>();
     private long currentGameLaunchStartedAtMillis;
     private String currentGameLaunchVersionId;
+    private volatile Map<String, ProfileMetadata> profileMetadataCache = Map.of();
+    private volatile Map<String, Boolean> installedClientVersionCache = new LinkedHashMap<>();
     private static final Pattern HTML_TAG_PATTERN = Pattern.compile("<[^>]+>");
     private static final Pattern HTML_DEC_ENTITY_PATTERN = Pattern.compile("&#(\\d+);");
     private static final Pattern HTML_HEX_ENTITY_PATTERN = Pattern.compile("&#x([0-9a-fA-F]+);");
@@ -198,6 +202,7 @@ public final class LimecraftApp extends Application {
         loadSettings();
 
         versionsList = new ListView<>();
+        versionsList.setFixedCellSize(28);
         versionsList.setMaxSize(Double.MAX_VALUE, Double.MAX_VALUE);
         versionsList.setCellFactory(list -> new ListCell<>() {
             private final Label text = new Label();
@@ -477,8 +482,6 @@ public final class LimecraftApp extends Application {
 
         addVersionButton = new Button("Add Version");
         addVersionButton.setOnAction(e -> openAddVersionDialog(null, null));
-        addVersionButton.setVisible(false);
-        addVersionButton.setManaged(false);
 
         installModloaderButton = new Button("Install Modloader");
         installModloaderButton.setOnAction(e -> openModloaderInstallDialog());
@@ -623,7 +626,7 @@ public final class LimecraftApp extends Application {
         leftScroll.setMinWidth(320);
 
         Label versionsLabel = new Label("Minecraft Versions");
-        VBox right = new VBox(8, installModloaderButton, versionsLabel, versionsList);
+        VBox right = new VBox(8, addVersionButton, installModloaderButton, versionsLabel, versionsList);
         HBox.setHgrow(right, Priority.ALWAYS);
         VBox.setVgrow(versionsList, Priority.ALWAYS);
         right.setMaxWidth(Double.MAX_VALUE);
@@ -705,6 +708,7 @@ public final class LimecraftApp extends Application {
         });
 
         appendLog("[Limecraft] Using " + appPaths.storageModeLabel() + " storage at " + gameDir.toAbsolutePath());
+        migrateLegacyAuthStateIfNeeded();
         updateAccountIndicator();
         updateUpdateIndicator();
         updateClientModBrowserButtonState();
@@ -719,6 +723,67 @@ public final class LimecraftApp extends Application {
         Label l = new Label(text);
         l.getStyleClass().add("title");
         return l;
+    }
+
+    private void migrateLegacyAuthStateIfNeeded() {
+        if (!appPaths.portableData()) {
+            return;
+        }
+        Path legacyDir = appPaths.legacyDataDir();
+        if (gameDir.equals(legacyDir) || !Files.isDirectory(legacyDir)) {
+            return;
+        }
+        boolean migratedAnything = false;
+        try {
+            Files.createDirectories(gameDir);
+
+            Path currentAccounts = gameDir.resolve("accounts.json");
+            Path legacyAccounts = legacyDir.resolve("accounts.json");
+            if (!Files.exists(currentAccounts) && Files.isRegularFile(legacyAccounts)) {
+                Files.copy(legacyAccounts, currentAccounts, StandardCopyOption.REPLACE_EXISTING);
+                migratedAnything = true;
+                appendLog("[Limecraft] Imported saved accounts from " + legacyDir);
+            }
+
+            Path currentSecureTokens = gameDir.resolve("secure-tokens.properties");
+            Path legacySecureTokens = legacyDir.resolve("secure-tokens.properties");
+            if (!Files.exists(currentSecureTokens) && Files.isRegularFile(legacySecureTokens)) {
+                Files.copy(legacySecureTokens, currentSecureTokens, StandardCopyOption.REPLACE_EXISTING);
+                migratedAnything = true;
+                appendLog("[Limecraft] Imported saved secure tokens from " + legacyDir);
+            }
+
+            if (selectedAccountId == null || selectedAccountId.isBlank()) {
+                String migratedSelectedAccountId = readSelectedAccountIdFrom(legacyDir.resolve(SETTINGS_FILE));
+                if (migratedSelectedAccountId != null && !migratedSelectedAccountId.isBlank()) {
+                    selectedAccountId = migratedSelectedAccountId;
+                    migratedAnything = true;
+                    appendLog("[Limecraft] Restored saved account selection from " + legacyDir);
+                }
+            }
+
+            if (migratedAnything) {
+                saveSettings();
+            }
+        } catch (Exception ex) {
+            appendLog("[Limecraft] Failed to import saved auth state from " + legacyDir + ": " + ex.getMessage());
+        }
+    }
+
+    private String readSelectedAccountIdFrom(Path settingsFile) {
+        if (settingsFile == null || !Files.isRegularFile(settingsFile)) {
+            return "";
+        }
+        try {
+            Properties props = new Properties();
+            try (var in = Files.newInputStream(settingsFile)) {
+                props.load(in);
+            }
+            String value = props.getProperty(KEY_SELECTED_ACCOUNT_ID, "");
+            return value == null ? "" : value.trim();
+        } catch (Exception ex) {
+            return "";
+        }
     }
 
     private VBox labeledNode(String label, Control control) {
@@ -769,6 +834,7 @@ public final class LimecraftApp extends Application {
 
     private VBox createServerTab() {
         serverVersionsList = new ListView<>();
+        serverVersionsList.setFixedCellSize(28);
         serverVersionsList.setMaxSize(Double.MAX_VALUE, Double.MAX_VALUE);
         serverVersionsList.setCellFactory(list -> new ListCell<>() {
             private final Label text = new Label();
@@ -1416,6 +1482,7 @@ public final class LimecraftApp extends Application {
         updated.removeIf(existing -> existing.id().equalsIgnoreCase(version.id()));
         updated.add(version);
         updated.sort(Comparator.comparing(VersionEntry::releaseTime).reversed());
+        installedClientVersionCache.remove(version.id());
         allVersions = updated;
         applyVersionFilter();
         applyServerVersionFilter();
@@ -1575,7 +1642,7 @@ public final class LimecraftApp extends Application {
     }
 
     private boolean isManagedVersion(VersionEntry version) {
-        return isModdedVersion(version);
+        return isModdedVersion(version) || isCustomVersion(version);
     }
 
     private void deleteManagedVersion(VersionEntry version) {
@@ -1603,6 +1670,7 @@ public final class LimecraftApp extends Application {
                     deleteDirectoryIfExists(instanceDir);
                 }
                 Platform.runLater(() -> {
+                    installedClientVersionCache.remove(version.id());
                     List<VersionEntry> updated = new ArrayList<>(allVersions);
                     updated.removeIf(v -> v.id().equalsIgnoreCase(version.id()));
                     allVersions = updated;
@@ -1665,26 +1733,69 @@ public final class LimecraftApp extends Application {
         return gameDir.resolve("instances").resolve(safeFolderName(versionId));
     }
 
+    private Path legacyInstanceDirForId(String versionId) {
+        if (SHARED_CLIENT_WORKSPACE) {
+            return appPaths.legacyDataDir().resolve("client");
+        }
+        return appPaths.legacyDataDir().resolve("instances").resolve(safeFolderName(versionId));
+    }
+
+    private Path existingInstanceDirFor(VersionEntry version) {
+        return existingInstanceDirForId(version.id());
+    }
+
+    private Path existingInstanceDirForId(String versionId) {
+        Path local = instanceDirForId(versionId);
+        if (Files.isDirectory(local)) {
+            return local;
+        }
+        Path legacy = legacyInstanceDirForId(versionId);
+        if (Files.isDirectory(legacy)) {
+            return legacy;
+        }
+        return local;
+    }
+
     private Path worldsDirFor(VersionEntry version) {
         return instanceDirFor(version).resolve("saves");
+    }
+
+    private Path existingWorldsDirFor(VersionEntry version) {
+        return existingInstanceDirFor(version).resolve("saves");
     }
 
     private boolean hasLaunchedVersion(VersionEntry version) {
         if (version == null) {
             return false;
         }
-        return Files.isDirectory(instanceDirFor(version));
+        return Files.isDirectory(existingInstanceDirFor(version));
     }
 
     private boolean hasWorldsFolder(VersionEntry version) {
         if (version == null) {
             return false;
         }
-        return Files.isDirectory(worldsDirFor(version));
+        return Files.isDirectory(existingWorldsDirFor(version));
+    }
+
+    private void ensureInstanceAvailableLocally(VersionEntry version) throws Exception {
+        if (version == null || SHARED_CLIENT_WORKSPACE) {
+            return;
+        }
+        Path localDir = instanceDirFor(version);
+        if (Files.isDirectory(localDir)) {
+            return;
+        }
+        Path legacyDir = legacyInstanceDirForId(version.id());
+        if (!Files.isDirectory(legacyDir)) {
+            return;
+        }
+        copyDirectory(legacyDir, localDir);
+        appendLog("[Limecraft] Imported legacy instance folder for " + version.id());
     }
 
     private InstanceSettings loadInstanceSettings(VersionEntry version) {
-        Path file = instanceDirFor(version).resolve("instance.properties");
+        Path file = existingInstanceDirFor(version).resolve("instance.properties");
         if (!Files.exists(file)) {
         return new InstanceSettings("", "", false);
         }
@@ -1805,6 +1916,7 @@ public final class LimecraftApp extends Application {
                         current.playTimeSeconds(),
                         current.lastPlayedAt()
                 ));
+                profileMetadataCache = profileMetadataStore.loadAll();
                 versionsList.refresh();
                 if (serverVersionsList != null) {
                     serverVersionsList.refresh();
@@ -1866,7 +1978,8 @@ public final class LimecraftApp extends Application {
     }
 
     private void openInstanceFolder(VersionEntry version) {
-        Path instanceDir = instanceDirFor(version);
+        Path existingDir = existingInstanceDirFor(version);
+        Path instanceDir = Files.isDirectory(existingDir) ? existingDir : instanceDirFor(version);
         io.submit(() -> {
             try {
                 Files.createDirectories(instanceDir);
@@ -1882,7 +1995,7 @@ public final class LimecraftApp extends Application {
     }
 
     private void openWorldsFolder(VersionEntry version) {
-        Path savesDir = worldsDirFor(version);
+        Path savesDir = existingWorldsDirFor(version);
         io.submit(() -> {
             try {
                 if (!Files.isDirectory(savesDir)) {
@@ -1908,7 +2021,7 @@ public final class LimecraftApp extends Application {
             setStatus("Select a version first.", 0);
             return;
         }
-        Path sourceSaves = worldsDirFor(source);
+        Path sourceSaves = existingWorldsDirFor(source);
         if (!Files.isDirectory(sourceSaves)) {
             setStatus("No worlds found for " + source.id() + ". Launch it once first.", 0);
             return;
@@ -2070,7 +2183,10 @@ public final class LimecraftApp extends Application {
     }
 
     private String formatVersionLabel(VersionEntry version) {
-        ProfileMetadata metadata = profileMetadataStore.get(version.id());
+        ProfileMetadata metadata = profileMetadataCache.getOrDefault(
+                version.id(),
+                ProfileMetadata.defaults(version.id())
+        );
         StringBuilder label = new StringBuilder();
         if (metadata.favorite()) {
             label.append("\u2605 ");
@@ -2103,9 +2219,23 @@ public final class LimecraftApp extends Application {
         if (type.equals("fabric") || type.equals("quilt") || type.equals("forge") || type.equals("neoforge")) {
             return type;
         }
+        if (type.equals("custom")) {
+            return "custom";
+        }
+        if (version.url() != null && !version.url().isBlank()) {
+            return "vanilla";
+        }
+        if (type.equals("release")
+                || type.equals("snapshot")
+                || type.equals("old_alpha")
+                || type.equals("old_beta")
+                || type.equals("experiment")
+                || type.equals("pending")) {
+            return "vanilla";
+        }
         JsonObject meta = loadVersionMetaQuiet(version.id());
         if (meta == null) {
-            return type.isBlank() ? "vanilla" : type;
+            return "vanilla";
         }
         return detectLoaderFamilyFromMetadata(meta, type);
     }
@@ -2246,7 +2376,7 @@ public final class LimecraftApp extends Application {
             return;
         }
         copyDirectory(sourceVersionDir, localVersionDir);
-        appendLog("[Limecraft] Imported shared loader profile " + version.id() + " into " + appPaths.storageModeLabel() + " storage");
+        appendLog("[Limecraft] Imported managed loader profile " + version.id() + " into " + appPaths.storageModeLabel() + " storage");
     }
 
     private Path logsDirFor(VersionEntry version) {
@@ -2333,6 +2463,7 @@ public final class LimecraftApp extends Application {
         }
         try {
             profileMetadataStore.recordPlaySession(versionId, seconds);
+            profileMetadataCache = profileMetadataStore.loadAll();
             Platform.runLater(() -> {
                 if (versionsList != null) {
                     versionsList.refresh();
@@ -2513,32 +2644,75 @@ public final class LimecraftApp extends Application {
     }
 
     private void refreshVersions() {
-        setStatus("Loading official version list...", 0.05);
+        setStatus("Loading versions...", 0.05);
         io.submit(() -> {
+            List<VersionEntry> custom = List.of();
+            List<VersionEntry> cachedOfficial = List.of();
             try {
-                importLegacyManagedVersions();
-                List<VersionEntry> official = installService.listVersions();
-                List<VersionEntry> custom = loadCustomVersions();
-
-                List<VersionEntry> combined = new ArrayList<>(custom);
-                for (VersionEntry version : official) {
-                    boolean duplicate = combined.stream().anyMatch(v -> v.id().equalsIgnoreCase(version.id()));
-                    if (!duplicate) {
-                        combined.add(version);
-                    }
-                }
-
+                custom = loadCustomVersions();
+                cachedOfficial = installService.listCachedVersions();
+                List<VersionEntry> initialVersions = mergeVersionLists(custom, cachedOfficial);
+                int localVersionCount = custom.size();
+                Map<String, ProfileMetadata> initialMetadataCache = profileMetadataStore.loadAll();
+                int cachedOfficialCount = cachedOfficial.size();
                 Platform.runLater(() -> {
-                    allVersions = combined;
-                    versionsList.refresh();
+                    profileMetadataCache = initialMetadataCache;
+                    installedClientVersionCache = new LinkedHashMap<>();
+                    allVersions = initialVersions;
                     applyVersionFilter();
                     applyServerVersionFilter();
-                    setStatus("Loaded " + official.size() + " official + " + custom.size() + " shared loader profiles", 0);
+                    if (cachedOfficialCount > 0) {
+                        setStatus("Loaded " + cachedOfficialCount + " cached official + " + localVersionCount + " added version(s). Refreshing official versions...", 0.08);
+                    } else {
+                        setStatus("Loaded " + localVersionCount + " added version(s). Loading official Minecraft versions...", 0.08);
+                    }
+                });
+
+                List<VersionEntry> official = installService.listVersions();
+                int officialVersionCount = official.size();
+                List<VersionEntry> combined = mergeVersionLists(custom, official);
+
+                Platform.runLater(() -> {
+                    installedClientVersionCache = new LinkedHashMap<>(installedClientVersionCache);
+                    allVersions = combined;
+                    applyVersionFilter();
+                    applyServerVersionFilter();
+                    setStatus("Loaded " + officialVersionCount + " official + " + localVersionCount + " added version(s)", 0);
                 });
             } catch (Exception ex) {
-                fail(ex);
+                List<VersionEntry> fallbackVersions = mergeVersionLists(custom, cachedOfficial);
+                Map<String, ProfileMetadata> fallbackMetadataCache = profileMetadataStore.loadAll();
+                Platform.runLater(() -> {
+                    profileMetadataCache = fallbackMetadataCache;
+                    installedClientVersionCache = new LinkedHashMap<>(installedClientVersionCache);
+                    allVersions = fallbackVersions;
+                    applyVersionFilter();
+                    applyServerVersionFilter();
+                    appendLog("[Limecraft] Official version refresh failed: " + friendlyErrorMessage(ex));
+                    if (!fallbackVersions.isEmpty()) {
+                        setStatus("Loaded cached/local versions only. Official Minecraft version refresh failed.", 0);
+                    } else {
+                        setStatus("Official Minecraft version refresh failed.", 0);
+                    }
+                });
             }
         });
+    }
+
+    private List<VersionEntry> mergeVersionLists(List<VersionEntry> preferred, List<VersionEntry> secondary) {
+        List<VersionEntry> merged = new ArrayList<>();
+        if (preferred != null) {
+            merged.addAll(preferred);
+        }
+        if (secondary != null) {
+            for (VersionEntry version : secondary) {
+                boolean duplicate = merged.stream().anyMatch(existing -> existing.id().equalsIgnoreCase(version.id()));
+                if (!duplicate) {
+                    merged.add(version);
+                }
+            }
+        }
+        return merged;
     }
 
     private void importLegacyManagedVersions() {
@@ -2578,7 +2752,7 @@ public final class LimecraftApp extends Application {
 
                     String type = meta.has("type") ? meta.get("type").getAsString() : "";
                     String loader = detectLoaderFamilyFromMetadata(meta, type);
-                    if ("vanilla".equalsIgnoreCase(loader) || "custom".equalsIgnoreCase(loader)) {
+                    if ("vanilla".equalsIgnoreCase(loader)) {
                         continue;
                     }
 
@@ -2592,27 +2766,79 @@ public final class LimecraftApp extends Application {
                 }
             }
         } catch (Exception ex) {
-            appendLog("[Limecraft] Failed to import shared loader profiles from " + legacyDir + ": " + ex.getMessage());
+            appendLog("[Limecraft] Failed to import local versions from " + legacyDir + ": " + ex.getMessage());
             return;
         }
 
         if (importedCount > 0) {
-            appendLog("[Limecraft] Imported " + importedCount + " shared loader profile(s) from " + legacyDir);
+            appendLog("[Limecraft] Imported " + importedCount + " local version(s) from " + legacyDir);
+        }
+    }
+
+    private void importLegacyInstanceFolders() {
+        if (legacyInstanceImportAttempted) {
+            return;
+        }
+        legacyInstanceImportAttempted = true;
+
+        Path legacyDir = appPaths.legacyDataDir();
+        if (legacyDir == null || legacyDir.equals(gameDir)) {
+            return;
+        }
+
+        Path legacyInstancesDir = legacyDir.resolve("instances");
+        if (!Files.isDirectory(legacyInstancesDir)) {
+            return;
+        }
+
+        Path targetInstancesDir = gameDir.resolve("instances");
+        int importedCount = 0;
+        try {
+            Files.createDirectories(targetInstancesDir);
+            try (Stream<Path> stream = Files.list(legacyInstancesDir)) {
+                for (Path sourceDir : stream.filter(Files::isDirectory).toList()) {
+                    Path targetDir = targetInstancesDir.resolve(sourceDir.getFileName().toString());
+                    if (Files.exists(targetDir)) {
+                        continue;
+                    }
+                    copyDirectory(sourceDir, targetDir);
+                    importedCount++;
+                }
+            }
+        } catch (Exception ex) {
+            appendLog("[Limecraft] Failed to import legacy instance folders from " + legacyDir + ": " + ex.getMessage());
+            return;
+        }
+
+        if (importedCount > 0) {
+            appendLog("[Limecraft] Imported " + importedCount + " legacy instance folder(s) into " + appPaths.storageModeLabel() + " storage");
         }
     }
 
     private List<VersionEntry> loadCustomVersions() {
         List<VersionEntry> custom = new ArrayList<>();
-        Path versionsDir = gameDir.resolve("versions");
-        if (!Files.isDirectory(versionsDir)) {
-            return custom;
+        Set<String> seenIds = new LinkedHashSet<>();
+        loadCustomVersionsFrom(gameDir.resolve("versions"), custom, seenIds, "local");
+        Path legacyVersionsDir = appPaths.legacyDataDir().resolve("versions");
+        if (!legacyVersionsDir.equals(gameDir.resolve("versions"))) {
+            loadCustomVersionsFrom(legacyVersionsDir, custom, seenIds, "legacy");
         }
+        custom.sort(Comparator.comparing(VersionEntry::releaseTime).reversed());
+        return custom;
+    }
 
+    private void loadCustomVersionsFrom(Path versionsDir, List<VersionEntry> custom, Set<String> seenIds, String sourceLabel) {
+        if (!Files.isDirectory(versionsDir)) {
+            return;
+        }
         try (var stream = Files.list(versionsDir)) {
             stream.filter(Files::isDirectory).forEach(dir -> {
                 String id = dir.getFileName().toString();
+                String normalizedId = id.toLowerCase(Locale.ROOT);
+                if (seenIds.contains(normalizedId)) {
+                    return;
+                }
                 Path json = dir.resolve(id + ".json");
-
                 if (!Files.exists(json)) {
                     return;
                 }
@@ -2620,22 +2846,21 @@ public final class LimecraftApp extends Application {
                     JsonObject meta = JsonParser.parseString(Files.readString(json)).getAsJsonObject();
                     String type = meta.has("type") ? meta.get("type").getAsString() : "";
                     String detectedLoader = detectLoaderFamilyFromMetadata(meta, type);
-                    if ("vanilla".equalsIgnoreCase(detectedLoader) || "custom".equalsIgnoreCase(detectedLoader)) {
+                    if ("vanilla".equalsIgnoreCase(detectedLoader)) {
                         return;
                     }
+                    String entryType = "custom".equalsIgnoreCase(type) ? "custom" : detectedLoader;
                     String releaseTime = meta.has("releaseTime")
                             ? meta.get("releaseTime").getAsString()
                             : Instant.now().toString();
-                    custom.add(new VersionEntry(id, detectedLoader, "", releaseTime, detectProfileSideFromMetadata(meta)));
+                    seenIds.add(normalizedId);
+                    custom.add(new VersionEntry(id, entryType, "", releaseTime, detectProfileSideFromMetadata(meta)));
                 } catch (Exception ignored) {
                 }
             });
         } catch (Exception ex) {
-            appendLog("[Limecraft] Failed to load managed loader profiles: " + ex.getMessage());
+            appendLog("[Limecraft] Failed to load " + sourceLabel + " versions from " + versionsDir + ": " + ex.getMessage());
         }
-
-        custom.sort(Comparator.comparing(VersionEntry::releaseTime).reversed());
-        return custom;
     }
 
     private boolean isFabricMetadata(JsonObject meta) {
@@ -3453,6 +3678,7 @@ public final class LimecraftApp extends Application {
                     saveSettings();
                 }
 
+                ensureInstanceAvailableLocally(selected);
                 InstanceSettings instanceSettings = loadInstanceSettings(selected);
                 String javaPath = instanceSettings.javaPath().isBlank()
                         ? javaPathField.getText().trim()
@@ -3476,6 +3702,7 @@ public final class LimecraftApp extends Application {
                 currentGameLaunchStartedAtMillis = System.currentTimeMillis();
                 currentGameLaunchVersionId = selected.id();
                 Platform.runLater(() -> {
+                    installedClientVersionCache.remove(selected.id());
                     versionsList.refresh();
                     setGameRunning(true);
                     recordRecentLaunch(selected.id());
@@ -3518,6 +3745,7 @@ public final class LimecraftApp extends Application {
                     ensureInheritedDependenciesInstalled(meta);
                 }
                 Platform.runLater(() -> {
+                    installedClientVersionCache.remove(selected.id());
                     versionsList.refresh();
                     setStatus("Repaired " + selected.id(), 0);
                 });
@@ -4893,13 +5121,24 @@ public final class LimecraftApp extends Application {
     }
 
     private boolean isVersionInstalled(VersionEntry version) {
-        Path versionDir = gameDir.resolve("versions").resolve(version.id());
-        Path json = versionDir.resolve(version.id() + ".json");
+        if (version == null) {
+            return false;
+        }
+        Boolean cached = installedClientVersionCache.get(version.id());
+        if (cached != null) {
+            return cached;
+        }
+        boolean installed = isVersionInstalledOnDisk(version);
+        installedClientVersionCache.put(version.id(), installed);
+        return installed;
+    }
+
+    private boolean isVersionInstalledOnDisk(VersionEntry version) {
+        Path json = findVersionJson(version.id());
         if (!Files.exists(json)) {
             return false;
         }
-        Path jar = versionDir.resolve(version.id() + ".jar");
-        if (Files.exists(jar)) {
+        if (versionJarExists(version.id())) {
             return true;
         }
         try {
@@ -4908,11 +5147,22 @@ public final class LimecraftApp extends Application {
                 return false;
             }
             String parent = meta.get("inheritsFrom").getAsString();
-            Path parentJar = gameDir.resolve("versions").resolve(parent).resolve(parent + ".jar");
-            return Files.exists(parentJar);
+            return versionJarExists(parent);
         } catch (Exception ex) {
             return false;
         }
+    }
+
+    private boolean versionJarExists(String versionId) {
+        if (versionId == null || versionId.isBlank()) {
+            return false;
+        }
+        Path localJar = gameDir.resolve("versions").resolve(versionId).resolve(versionId + ".jar");
+        if (Files.exists(localJar)) {
+            return true;
+        }
+        Path legacyJar = appPaths.legacyDataDir().resolve("versions").resolve(versionId).resolve(versionId + ".jar");
+        return Files.exists(legacyJar);
     }
     private void applyVersionFilter() {
         String query = searchField.getText() == null ? "" : searchField.getText().trim().toLowerCase(Locale.ROOT);

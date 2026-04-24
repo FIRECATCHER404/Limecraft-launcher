@@ -42,7 +42,7 @@ public final class MinecraftLaunchService {
             throw new IllegalStateException("Missing client jar for " + versionId + " (or its parent version)");
         }
 
-        Path instanceDir = gameDir.resolve("client");
+        Path instanceDir = gameDir.resolve("instances").resolve(safeFolderName(versionId));
         Files.createDirectories(instanceDir);
 
         List<String> classpathEntries = buildClasspathEntries(effectiveMeta, gameJar, os);

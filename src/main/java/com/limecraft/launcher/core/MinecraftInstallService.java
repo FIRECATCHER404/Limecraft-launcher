@@ -3,8 +3,11 @@ package com.limecraft.launcher.core;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -15,6 +18,8 @@ import java.util.Map;
 public final class MinecraftInstallService {
     private static final String MANIFEST_URL = "https://launchermeta.mojang.com/mc/game/version_manifest_v2.json";
     private static final String EXPERIMENTAL_MANIFEST_URL = "https://maven.fabricmc.net/net/minecraft/experimental_versions.json";
+    private static final String OFFICIAL_MANIFEST_CACHE = "version_manifest_v2.json";
+    private static final String EXPERIMENTAL_MANIFEST_CACHE = "experimental_versions.json";
 
     private final HttpClient http;
     private final Downloader downloader;
@@ -28,16 +33,96 @@ public final class MinecraftInstallService {
 
     public List<VersionEntry> listVersions() throws IOException {
         Map<String, VersionEntry> byId = new LinkedHashMap<>();
-        mergeManifestInto(byId, MANIFEST_URL, false);
-        mergeManifestInto(byId, EXPERIMENTAL_MANIFEST_URL, true);
+        mergeManifestInto(byId, MANIFEST_URL, false, OFFICIAL_MANIFEST_CACHE, false);
+        mergeManifestInto(byId, EXPERIMENTAL_MANIFEST_URL, true, EXPERIMENTAL_MANIFEST_CACHE, false);
 
         List<VersionEntry> out = new ArrayList<>(byId.values());
         out.sort(Comparator.comparing(VersionEntry::releaseTime).reversed());
         return out;
     }
 
-    private void mergeManifestInto(Map<String, VersionEntry> target, String url, boolean experimental) throws IOException {
-        JsonObject manifest = http.getJson(url);
+    public List<VersionEntry> listCachedVersions() {
+        Map<String, VersionEntry> byId = new LinkedHashMap<>();
+        mergeCachedManifestInto(byId, OFFICIAL_MANIFEST_CACHE, false);
+        mergeCachedManifestInto(byId, EXPERIMENTAL_MANIFEST_CACHE, true);
+
+        List<VersionEntry> out = new ArrayList<>(byId.values());
+        out.sort(Comparator.comparing(VersionEntry::releaseTime).reversed());
+        return out;
+    }
+
+    private void mergeManifestInto(Map<String, VersionEntry> target, String url, boolean experimental, String cacheFileName, boolean required) throws IOException {
+        JsonObject manifest = readManifestWithCache(url, cacheFileName, required);
+        if (manifest == null || !manifest.has("versions") || !manifest.get("versions").isJsonArray()) {
+            return;
+        }
+        JsonArray versions = manifest.getAsJsonArray("versions");
+        for (JsonElement el : versions) {
+            JsonObject o = el.getAsJsonObject();
+            String id = o.get("id").getAsString();
+            String type = o.get("type").getAsString();
+            if (experimental && "pending".equals(type)) {
+                type = "experiment";
+            }
+            target.putIfAbsent(id, new VersionEntry(
+                    id,
+                    type,
+                    o.get("url").getAsString(),
+                    o.get("releaseTime").getAsString()
+            ));
+        }
+    }
+
+    private JsonObject readManifestWithCache(String url, String cacheFileName, boolean required) throws IOException {
+        try {
+            JsonObject manifest = http.getJson(url);
+            writeManifestCache(cacheFileName, manifest);
+            return manifest;
+        } catch (IOException networkError) {
+            JsonObject cached = readManifestCache(cacheFileName);
+            if (cached != null) {
+                return cached;
+            }
+            if (required) {
+                throw networkError;
+            }
+            return null;
+        }
+    }
+
+    private void writeManifestCache(String cacheFileName, JsonObject manifest) throws IOException {
+        if (cacheFileName == null || cacheFileName.isBlank() || manifest == null) {
+            return;
+        }
+        Path cacheFile = manifestCachePath(cacheFileName);
+        Files.createDirectories(cacheFile.getParent());
+        Files.writeString(cacheFile, manifest.toString(), StandardCharsets.UTF_8);
+    }
+
+    private JsonObject readManifestCache(String cacheFileName) {
+        if (cacheFileName == null || cacheFileName.isBlank()) {
+            return null;
+        }
+        Path cacheFile = manifestCachePath(cacheFileName);
+        if (!Files.isRegularFile(cacheFile)) {
+            return null;
+        }
+        try {
+            return JsonParser.parseString(Files.readString(cacheFile, StandardCharsets.UTF_8)).getAsJsonObject();
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private Path manifestCachePath(String cacheFileName) {
+        return gameDir.resolve("cache").resolve(cacheFileName);
+    }
+
+    private void mergeCachedManifestInto(Map<String, VersionEntry> target, String cacheFileName, boolean experimental) {
+        JsonObject manifest = readManifestCache(cacheFileName);
+        if (manifest == null || !manifest.has("versions") || !manifest.get("versions").isJsonArray()) {
+            return;
+        }
         JsonArray versions = manifest.getAsJsonArray("versions");
         for (JsonElement el : versions) {
             JsonObject o = el.getAsJsonObject();

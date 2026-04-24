@@ -37,13 +37,13 @@ When that phrase is used, the implementation target is the full unchecked backlo
 - [ ] Add download/install actions from the preview window into the correct profile `mods` folder.
 - [ ] Show mod details before install: name, author, version, supported game versions, supported loaders, side support, and dependencies when available.
 
-### 3. Shared Mod / Content Safety
+### 3. Version-Scoped Mod / Content Safety
 
-- [ ] Keep client mods/content in a shared workspace instead of per-profile instance folders.
-- [ ] Warn before launch when the shared mods folder contains obviously incompatible jars for the selected loader or Minecraft version.
+- [x] Keep client mods/content in per-version instance folders instead of forcing one shared workspace.
+- [ ] Warn before launch when the selected version's mods folder contains obviously incompatible jars for the selected loader or Minecraft version.
 - [ ] Warn when client-only mods are about to be used on a server flow, or server-only mods on a client flow.
 - [ ] Add dependency-aware install/update checks during mod downloads instead of building a full per-profile mod manager.
-- [ ] Add lightweight duplicate/conflict detection for jars in the shared mods folder.
+- [ ] Add lightweight duplicate/conflict detection for jars in the selected version's mods folder.
 
 ### 4. Server-Specific Improvements
 
@@ -72,7 +72,7 @@ When that phrase is used, the implementation target is the full unchecked backlo
 - [ ] Add retry, cancel, and queued job handling for installs/downloads instead of only one-shot background tasks.
 - [ ] Expand the profile model beyond `id/type/url/releaseTime` so profiles can carry richer metadata.
 - [ ] Add profile metadata such as icon, notes, tags, favorite state, grouping, and playtime tracking.
-- [x] Collapse client data into a shared workspace instead of per-version instance folders.
+- [x] Keep client data in per-version instance folders instead of forcing a shared client workspace.
 - [x] Remove manual custom-version creation from the main launcher flow.
 - [ ] Finish removing remaining custom-version terminology and dead code paths.
 - [ ] Add backup/snapshot/restore flows before destructive actions like deleting versions, changing loaders, or moving worlds.
@@ -192,7 +192,7 @@ These are the parts still not fully defined yet:
 - Whether plugin server platforms count as part of the same feature set
 - Whether CurseForge should be included alongside Modrinth
 - Whether the mod browser should be a pure embedded web page, a launcher-native UI backed by web APIs, or both
-- Whether the shared client workspace should ever be optional again, or remain the only client mode
+- Whether per-version instance folders should remain the only client mode, or whether an optional shared workspace should ever come back
 - Whether multi-account support should include offline account presets too
 - Whether runtime download/install should be fully launcher-managed or only help the user find the right Java
 - Whether portable mode should be the default when launching from a zip/app-image build
@@ -209,5 +209,5 @@ These are the parts still not fully defined yet:
 6. Split `LimecraftApp` into smaller components before the next big UI wave.
 7. Add the custom topbar + startup update indicator + portable storage model.
 8. Add the embedded mod browser and install flow.
-9. Add shared-workspace compatibility checks, dependency-aware installs, sync, updates, and sharing features.
+9. Add per-version compatibility checks, dependency-aware installs, sync, updates, and sharing features.
 10. Add self-update + release-batch automation once packaging/layout conventions are stable.
