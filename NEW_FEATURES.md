@@ -78,6 +78,7 @@ When that phrase is used, the implementation target is the full unchecked backlo
 - [ ] Add backup/snapshot/restore flows before destructive actions like deleting versions, changing loaders, or moving worlds.
 - [ ] Add crash-report and log tooling, including quick-open actions for logs/crash reports and basic diagnosis of likely failures.
 - [ ] Upgrade Java runtime management beyond scanning `C:/Program Files/Java`, including better discovery, version matching, and optional runtime download/install flows.
+- [x] Block client/server launches when the selected Java runtime is older than the Minecraft metadata requires.
 - [ ] Add embedded web support infrastructure (`javafx.web`) so in-app web preview/news/browser features are actually possible.
 - [ ] Refactor the oversized `LimecraftApp` into smaller UI/service components before piling on major new features.
 

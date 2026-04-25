@@ -24,6 +24,7 @@ Packaged and development builds store launcher data in `%USERPROFILE%/.limecraft
 - Provides custom Java path and max-memory settings, including per-version overrides.
 - Detects installed Java runtimes from common install locations, Minecraft runtimes, `JAVA_HOME`, and `PATH`.
 - Recommends a Java major version for the selected Minecraft version when possible.
+- Blocks launches when the selected Java runtime is older than the selected Minecraft version requires, with a clear fix message.
 - Includes launch logs, repair tools, recent versions, version search, experimental version visibility, crash-report shortcuts, and instance folder shortcuts.
 
 ## Client Tools

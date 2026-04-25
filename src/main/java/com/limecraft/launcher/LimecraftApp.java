@@ -2352,6 +2352,102 @@ public final class LimecraftApp extends Application {
         }
     }
 
+    private JsonObject loadOrFetchVersionMeta(VersionEntry version) throws Exception {
+        if (version == null) {
+            return null;
+        }
+        JsonObject local = loadVersionMetaQuiet(version.id());
+        if (local != null) {
+            return local;
+        }
+        if (version.url() == null || version.url().isBlank()) {
+            return null;
+        }
+        return http.getJson(version.url());
+    }
+
+    private void validateJavaRuntimeForVersion(String versionId, JsonObject meta, String javaPath, String side) {
+        int requiredMajor = resolveRequiredJavaMajor(versionId, meta, new HashSet<>());
+        if (requiredMajor <= 0) {
+            requiredMajor = javaRuntimeService.recommendJavaMajor(versionId);
+        }
+        if (requiredMajor <= 0) {
+            return;
+        }
+
+        String configuredJava = javaPath == null || javaPath.trim().isBlank() ? "java" : javaPath.trim();
+        int actualMajor = javaRuntimeService.readJavaMajor(configuredJava);
+        if (actualMajor <= 0) {
+            String message = "[Limecraft] Could not detect Java version for " + configuredJava
+                    + ". " + versionId + " is expected to need Java " + requiredMajor + "+.";
+            if ("server".equalsIgnoreCase(side)) {
+                appendServerLog(message);
+            } else {
+                appendLog(message);
+            }
+            return;
+        }
+
+        if (actualMajor < requiredMajor) {
+            throw new IllegalStateException(
+                    "Java runtime is too old for " + versionId + ". "
+                            + "This profile requires Java " + requiredMajor + "+, but Java Path is Java "
+                            + actualMajor + " (" + configuredJava + "). "
+                            + "Open Detect Java and select Java " + requiredMajor + " or newer, then launch again."
+            );
+        }
+    }
+
+    private int resolveRequiredJavaMajor(String versionId, JsonObject meta, Set<String> visiting) {
+        if (meta == null) {
+            return -1;
+        }
+        if (versionId != null && !versionId.isBlank() && !visiting.add(versionId)) {
+            return -1;
+        }
+        try {
+            if (meta.has("javaVersion") && meta.get("javaVersion").isJsonObject()) {
+                JsonObject javaVersion = meta.getAsJsonObject("javaVersion");
+                int major = readJsonInt(javaVersion, "majorVersion", -1);
+                if (major > 0) {
+                    return major;
+                }
+            }
+
+            String parentId = readJsonString(meta, "inheritsFrom");
+            if (parentId.isBlank()) {
+                return -1;
+            }
+            return resolveRequiredJavaMajor(parentId, loadVersionMetaQuiet(parentId), visiting);
+        } finally {
+            if (versionId != null && !versionId.isBlank()) {
+                visiting.remove(versionId);
+            }
+        }
+    }
+
+    private String readJsonString(JsonObject object, String key) {
+        if (object == null || key == null || !object.has(key) || object.get(key).isJsonNull()) {
+            return "";
+        }
+        try {
+            return object.get(key).getAsString().trim();
+        } catch (Exception ignored) {
+            return "";
+        }
+    }
+
+    private int readJsonInt(JsonObject object, String key, int fallback) {
+        if (object == null || key == null || !object.has(key) || object.get(key).isJsonNull()) {
+            return fallback;
+        }
+        try {
+            return object.get(key).getAsInt();
+        } catch (Exception ignored) {
+            return fallback;
+        }
+    }
+
     private Path findVersionJson(String versionId) {
         return installService.findVersionJson(versionId);
     }
@@ -2877,6 +2973,7 @@ public final class LimecraftApp extends Application {
                 Path serverDir = serverDirFor(selected);
                 ServerProfileSettings settings = readServerSettingsFromUi();
                 serverProfileStore.save(serverDir, settings);
+                validateJavaRuntimeForVersion(selected.id(), loadOrFetchVersionMeta(selected), settings.javaPath(), "server");
                 Path serverJar = Files.exists(serverDir.resolve("run.bat")) || Files.exists(serverDir.resolve("run.sh"))
                         ? null
                         : ensureServerInstalled(selected, serverDir, settings.javaPath());
@@ -3638,6 +3735,8 @@ public final class LimecraftApp extends Application {
                 String xmx = instanceSettings.xmx().isBlank()
                         ? ramField.getText().trim()
                         : instanceSettings.xmx().trim();
+
+                validateJavaRuntimeForVersion(selected.id(), meta, javaPath, "client");
 
                 setStatus("Launching " + selected.id() + "...", 0.9);
                 Process process = launchService.launch(

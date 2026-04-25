@@ -59,10 +59,12 @@ public final class JavaRuntimeService {
         if (lower.startsWith("24w") || lower.startsWith("25w") || lower.startsWith("26w")) {
             return 21;
         }
-        Matcher release = Pattern.compile("^(\\d+)\\.(\\d+).*").matcher(lower);
+        Matcher release = Pattern.compile("^(\\d+)\\.(\\d+)(?:\\.(\\d+))?.*").matcher(lower);
         if (release.matches()) {
+            int major = parseInt(release.group(1));
             int minor = parseInt(release.group(2));
-            if (minor >= 20) {
+            int patch = release.group(3) == null ? 0 : parseInt(release.group(3));
+            if (major > 1 || minor >= 21 || (minor == 20 && patch >= 5)) {
                 return 21;
             }
             if (minor >= 18) {
@@ -73,6 +75,10 @@ public final class JavaRuntimeService {
             }
         }
         return 8;
+    }
+
+    public int readJavaMajor(String javaExecutable) {
+        return parseJavaMajor(readJavaVersion(javaExecutable));
     }
 
     private void addRoots(Map<String, JavaRuntime> found, String source, Path... roots) {
@@ -132,11 +138,16 @@ public final class JavaRuntimeService {
     }
 
     private String readJavaVersion(Path javaExecutable) {
-        if (!Files.exists(javaExecutable)) {
-            return javaExecutable.toString();
+        return readJavaVersion(javaExecutable == null ? "" : javaExecutable.toString());
+    }
+
+    private String readJavaVersion(String javaExecutable) {
+        String command = versionProbeCommand(javaExecutable);
+        if (command.isBlank()) {
+            command = "java";
         }
         try {
-            Process process = new ProcessBuilder(javaExecutable.toString(), "-version")
+            Process process = new ProcessBuilder(command, "-version")
                     .redirectErrorStream(true)
                     .start();
             ByteArrayOutputStream output = new ByteArrayOutputStream();
@@ -150,8 +161,56 @@ public final class JavaRuntimeService {
             }
         } catch (Exception ignored) {
         }
-        Path fileName = javaExecutable.getParent() == null ? javaExecutable.getFileName() : javaExecutable.getParent().getParent().getFileName();
-        return fileName == null ? javaExecutable.toString() : fileName.toString();
+        Path javaPath = Path.of(javaExecutable == null || javaExecutable.isBlank() ? command : javaExecutable);
+        if (!Files.exists(javaPath)) {
+            return javaExecutable == null ? "" : javaExecutable;
+        }
+        Path fileName = javaPath.getParent() == null ? javaPath.getFileName() : javaPath.getParent().getParent().getFileName();
+        return fileName == null ? command : fileName.toString();
+    }
+
+    private String versionProbeCommand(String javaExecutable) {
+        String configured = javaExecutable == null || javaExecutable.isBlank() ? "java" : javaExecutable.trim();
+        String lower = configured.toLowerCase(Locale.ROOT);
+        if ("javaw".equals(lower) || "javaw.exe".equals(lower)) {
+            return "java";
+        }
+        try {
+            Path path = Path.of(configured);
+            Path fileName = path.getFileName();
+            if (fileName != null && fileName.toString().equalsIgnoreCase("javaw.exe")) {
+                Path siblingJava = path.resolveSibling("java.exe");
+                if (Files.exists(siblingJava)) {
+                    return siblingJava.toString();
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return configured;
+    }
+
+    private int parseJavaMajor(String version) {
+        if (version == null || version.isBlank()) {
+            return -1;
+        }
+        String trimmed = version.trim();
+        if (trimmed.startsWith("1.")) {
+            int dot = trimmed.indexOf('.', 2);
+            String major = dot > 2 ? trimmed.substring(2, dot) : trimmed.substring(2);
+            return parseInt(major);
+        }
+        int end = 0;
+        while (end < trimmed.length() && Character.isDigit(trimmed.charAt(end))) {
+            end++;
+        }
+        if (end == 0) {
+            Matcher matcher = Pattern.compile("(?:jdk|jre|java)[-_ ]?(\\d+)").matcher(trimmed.toLowerCase(Locale.ROOT));
+            if (matcher.find()) {
+                return parseInt(matcher.group(1));
+            }
+            return -1;
+        }
+        return parseInt(trimmed.substring(0, end));
     }
 
     private String inferArchitecture(Path javaHome) {
