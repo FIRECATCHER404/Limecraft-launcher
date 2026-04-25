@@ -1,7 +1,5 @@
 package com.limecraft.launcher.core;
 
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
@@ -9,14 +7,12 @@ public final class AppPaths {
     private final Path appRoot;
     private final Path dataDir;
     private final Path executablePath;
-    private final boolean portableData;
     private final boolean packagedApp;
 
-    private AppPaths(Path appRoot, Path dataDir, Path executablePath, boolean portableData, boolean packagedApp) {
+    private AppPaths(Path appRoot, Path dataDir, Path executablePath, boolean packagedApp) {
         this.appRoot = appRoot;
         this.dataDir = dataDir;
         this.executablePath = executablePath;
-        this.portableData = portableData;
         this.packagedApp = packagedApp;
     }
 
@@ -27,12 +23,9 @@ public final class AppPaths {
                 ? packagedExecutable.getParent().toAbsolutePath().normalize()
                 : Path.of(System.getProperty("user.dir", ".")).toAbsolutePath().normalize();
 
-        Path portableDir = packaged ? siblingPortableDir(root) : root.resolve("data");
-        Path legacyDir = Path.of(System.getProperty("user.home"), ".limecraft").toAbsolutePath().normalize();
-        boolean portable = canUsePortable(portableDir);
-        Path chosenDataDir = portable ? portableDir : legacyDir;
+        Path homeDataDir = homeDataDir();
 
-        return new AppPaths(root, chosenDataDir, packagedExecutable, portable, packaged);
+        return new AppPaths(root, homeDataDir, packagedExecutable, packaged);
     }
 
     public Path appRoot() {
@@ -44,15 +37,15 @@ public final class AppPaths {
     }
 
     public Path legacyDataDir() {
-        return Path.of(System.getProperty("user.home"), ".limecraft").toAbsolutePath().normalize();
+        return homeDataDir();
+    }
+
+    public Path deprecatedPortableDataDir() {
+        return packagedApp ? siblingPath("-data") : appRoot.resolve("data").toAbsolutePath().normalize();
     }
 
     public Path executablePath() {
         return executablePath;
-    }
-
-    public boolean portableData() {
-        return portableData;
     }
 
     public boolean packagedApp() {
@@ -73,7 +66,7 @@ public final class AppPaths {
     }
 
     public String storageModeLabel() {
-        return portableData ? "portable" : "home";
+        return "home";
     }
 
     private static Path detectPackagedExecutable() {
@@ -87,24 +80,7 @@ public final class AppPaths {
         return null;
     }
 
-    private static boolean canUsePortable(Path portableDir) {
-        try {
-            Files.createDirectories(portableDir);
-            Path probe = portableDir.resolve(".limecraft-write-test");
-            Files.writeString(probe, "ok", StandardCharsets.UTF_8);
-            Files.deleteIfExists(probe);
-            return true;
-        } catch (IOException ignored) {
-            return false;
-        }
-    }
-
-    private static Path siblingPortableDir(Path root) {
-        String baseName = root.getFileName() == null ? AppVersion.APP_NAME : root.getFileName().toString();
-        Path parent = root.getParent();
-        if (parent == null) {
-            return Path.of(baseName + "-data").toAbsolutePath().normalize();
-        }
-        return parent.resolve(baseName + "-data").toAbsolutePath().normalize();
+    private static Path homeDataDir() {
+        return Path.of(System.getProperty("user.home"), ".limecraft").toAbsolutePath().normalize();
     }
 }

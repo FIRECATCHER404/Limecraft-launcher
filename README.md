@@ -1,20 +1,21 @@
 # Limecraft Launcher
 
-Limecraft is a portable Minecraft: Java Edition launcher for Windows that combines client launching, server launching, modloader installation, mod browsing, account management, repair tools, crash diagnostics, and self-updates in one app.
+Limecraft is a Minecraft: Java Edition launcher for Windows that combines client launching, server launching, modloader installation, mod browsing, account management, repair tools, crash diagnostics, and self-updates in one app.
 
-The launcher is designed around shared launcher data and per-version instance folders. Each Minecraft version uses its own folder under `instances/<version>` for saves, logs, crash reports, mods, config, and options, while libraries, assets, accounts, and version metadata are shared by the launcher.
+The launcher is designed around one shared Limecraft data folder and per-version instance folders. All launcher data is stored in `%USERPROFILE%/.limecraft`. Each Minecraft version uses its own folder under `%USERPROFILE%/.limecraft/instances/<version>` for saves, logs, crash reports, mods, config, and options, while libraries, assets, accounts, and version metadata are shared by the launcher.
 
 ## Download
 
 Download the latest packaged build from the GitHub Releases page, extract the zip, and run `Limecraft.exe` inside the extracted `Limecraft` folder.
 
-Packaged builds store portable data beside the app in `Limecraft-data` when that folder is writable. Development runs use `data`, with `%USERPROFILE%/.limecraft` still used as a legacy fallback for older installs.
+Packaged and development builds store launcher data in `%USERPROFILE%/.limecraft`. Version `1.6` restores this behavior after `1.5` incorrectly used a portable sibling data folder. On startup, Limecraft will copy missing files from the old `Limecraft-data` or `data` folder into `%USERPROFILE%/.limecraft` if one of those deprecated folders exists.
 
 ## Core Features
 
 - Launches official Minecraft releases, snapshots, experiments, legacy versions, custom versions, and installed modloader versions.
 - Shows all known Minecraft versions plus added custom/modded versions, including installed-state indicators.
-- Uses per-version instance folders only, so saves, logs, crash reports, mods, and options stay separated by Minecraft version.
+- Stores all launcher data in `%USERPROFILE%/.limecraft`.
+- Uses per-version instance folders under `%USERPROFILE%/.limecraft/instances`, so saves, logs, crash reports, mods, and options stay separated by Minecraft version.
 - Supports Microsoft device-code login, saved Microsoft accounts, secure token storage through Windows DPAPI, saved-account restore, sign out, and offline mode.
 - Automatically downloads Mojang client jars, libraries, natives, and assets when needed.
 - Reuses valid cached libraries/assets/jars/natives instead of redownloading everything every launch.
@@ -97,6 +98,7 @@ Limecraft has a dedicated Server tab for creating and launching Minecraft server
 - `ship.bat` builds the packaged Windows app image.
 - `release.bat` builds the distributable zip, runs a privacy/leak scan, prints the package hash, and can use GitHub CLI for uploads when `gh` is installed.
 - Release packages are meant to be extracted as a folder and run from the included `Limecraft.exe`.
+- Extracting the app anywhere is fine; runtime data still goes to `%USERPROFILE%/.limecraft`, not beside the executable.
 
 ## Privacy and Safety Notes
 

@@ -81,8 +81,6 @@ public final class LauncherUpdateService {
                 $pidToWait = %d
                 $appRoot = '%s'
                 $appExe = '%s'
-                $legacyInternalData = '%s'
-                $portableData = '%s'
                 $workRoot = '%s'
                 $extractRoot = Join-Path $workRoot 'extract'
                 $downloadZip = Join-Path $workRoot '%s'
@@ -133,9 +131,6 @@ public final class LauncherUpdateService {
                     if (Test-Path $backupRoot) {
                         Remove-Item -LiteralPath $backupRoot -Recurse -Force
                     }
-                    if ((Test-Path $legacyInternalData) -and (-not (Test-Path $portableData))) {
-                        Move-Item -LiteralPath $legacyInternalData -Destination $portableData
-                    }
                     if (Test-Path $appRoot) {
                         Move-Item -LiteralPath $appRoot -Destination $backupRoot
                     }
@@ -155,8 +150,6 @@ public final class LauncherUpdateService {
                 currentPid,
                 escapePowerShellLiteral(appPaths.appRoot().toString()),
                 escapePowerShellLiteral(appPaths.executablePath().toString()),
-                escapePowerShellLiteral(appPaths.appRoot().resolve("data").toString()),
-                escapePowerShellLiteral(appPaths.dataDir().toString()),
                 escapePowerShellLiteral(appPaths.siblingPath("-update-work").toString()),
                 escapePowerShellLiteral(releaseInfo.asset().name()),
                 escapePowerShellLiteral(appPaths.siblingPath("-backup").toString()),

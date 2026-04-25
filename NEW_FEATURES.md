@@ -81,12 +81,10 @@ When that phrase is used, the implementation target is the full unchecked backlo
 - [ ] Add embedded web support infrastructure (`javafx.web`) so in-app web preview/news/browser features are actually possible.
 - [ ] Refactor the oversized `LimecraftApp` into smaller UI/service components before piling on major new features.
 
-### 7. Portability / Shell UX / Self-Update
+### 7. Storage / Shell UX / Self-Update
 
-- [x] Keep Limecraft portable-first for development and local testing instead of forcing everything into `%USERPROFILE%/.limecraft`.
-- [x] Add a clear storage-mode model:
-  - portable mode: keep launcher state relative to the executable/app folder
-  - user-profile mode: optional fallback for installed/non-portable setups
+- [x] Store all Limecraft launcher data in `%USERPROFILE%/.limecraft`.
+- [x] Restore missing files from the deprecated portable `Limecraft-data` / `data` folders into `%USERPROFILE%/.limecraft` without overwriting existing `.limecraft` files.
 - [x] Add a custom undecorated window topbar with:
   - app title/branding
   - minimize button
@@ -195,7 +193,7 @@ These are the parts still not fully defined yet:
 - Per-version instance folders are the client mode; shared client workspace support was intentionally removed.
 - Whether multi-account support should include offline account presets too
 - Whether runtime download/install should be fully launcher-managed or only help the user find the right Java
-- Whether portable mode should be the default when launching from a zip/app-image build
+- Whether the old deprecated portable folders should eventually be auto-deleted after their missing files are restored into `%USERPROFILE%/.limecraft`
 - Whether self-update should pull from GitHub Releases directly or from a separate update manifest
 - Whether the custom topbar should mimic native Windows behavior or deliberately use a branded launcher style
 
@@ -207,7 +205,7 @@ These are the parts still not fully defined yet:
 4. Add secure account storage/multi-account support and persist real server profiles.
 5. Add repair/verify/backup/runtime-management foundations.
 6. Split `LimecraftApp` into smaller components before the next big UI wave.
-7. Add the custom topbar + startup update indicator + portable storage model.
+7. Add the custom topbar + startup update indicator + fixed `.limecraft` storage model.
 8. Add the embedded mod browser and install flow.
 9. Add per-version compatibility checks, dependency-aware installs, sync, updates, and sharing features.
 10. Add self-update + release-batch automation once packaging/layout conventions are stable.

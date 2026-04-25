@@ -66,7 +66,6 @@ import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
@@ -102,7 +101,9 @@ public final class LimecraftApp extends Application {
     private static final String MICROSOFT_CLIENT_ID = "ba5cdd7c-bc36-4702-9613-35f14f83e52c";
     private static final String JAVA_PATCH_NOTES_INDEX_URL = "https://launchercontent.mojang.com/v2/javaPatchNotes.json";
     private static final String JAVA_PATCH_NOTES_BASE_URL = "https://launchercontent.mojang.com/v2/";
+    private static final Set<String> DEPRECATED_PORTABLE_MERGE_FOLDERS = Set.of("instances", "servers", "versions");
     private final AppPaths appPaths = AppPaths.detect();
+    private String startupStorageMigrationMessage = "";
     private final LauncherJobExecutor io = new LauncherJobExecutor(4);
     private final Path gameDir = appPaths.dataDir();
     private final HttpClient http = new HttpClient();
@@ -203,6 +204,7 @@ public final class LimecraftApp extends Application {
     @Override
     public void start(Stage stage) {
         primaryStage = stage;
+        migrateDeprecatedPortableDataIfNeeded();
         loadSettings();
 
         versionsList = new ListView<>();
@@ -712,7 +714,9 @@ public final class LimecraftApp extends Application {
         });
 
         appendLog("[Limecraft] Using " + appPaths.storageModeLabel() + " storage at " + gameDir.toAbsolutePath());
-        migrateLegacyAuthStateIfNeeded();
+        if (!startupStorageMigrationMessage.isBlank()) {
+            appendLog(startupStorageMigrationMessage);
+        }
         updateAccountIndicator();
         updateUpdateIndicator();
         updateClientModBrowserButtonState();
@@ -729,64 +733,85 @@ public final class LimecraftApp extends Application {
         return l;
     }
 
-    private void migrateLegacyAuthStateIfNeeded() {
-        if (!appPaths.portableData()) {
+    private void migrateDeprecatedPortableDataIfNeeded() {
+        Path source = appPaths.deprecatedPortableDataDir();
+        Path target = gameDir.toAbsolutePath().normalize();
+        if (source == null || target.equals(source) || !Files.isDirectory(source)) {
             return;
         }
-        Path legacyDir = appPaths.legacyDataDir();
-        if (gameDir.equals(legacyDir) || !Files.isDirectory(legacyDir)) {
-            return;
-        }
-        boolean migratedAnything = false;
+        int[] copiedFiles = {0};
+        int[] skippedFiles = {0};
         try {
-            Files.createDirectories(gameDir);
-
-            Path currentAccounts = gameDir.resolve("accounts.json");
-            Path legacyAccounts = legacyDir.resolve("accounts.json");
-            if (!Files.exists(currentAccounts) && Files.isRegularFile(legacyAccounts)) {
-                Files.copy(legacyAccounts, currentAccounts, StandardCopyOption.REPLACE_EXISTING);
-                migratedAnything = true;
-                appendLog("[Limecraft] Imported saved accounts from " + legacyDir);
+            Files.createDirectories(target);
+            try (Stream<Path> children = Files.list(source)) {
+                children.forEach(path -> {
+                    try {
+                        Path relative = source.relativize(path);
+                        Path destination = target.resolve(relative).normalize();
+                        if (!destination.startsWith(target)) {
+                            skippedFiles[0]++;
+                            return;
+                        }
+                        if (Files.isSymbolicLink(path)) {
+                            skippedFiles[0]++;
+                            return;
+                        }
+                        if (Files.exists(destination)
+                                && (!Files.isDirectory(path) || !shouldMergeDeprecatedPortableFolder(path))) {
+                            skippedFiles[0]++;
+                            return;
+                        }
+                        copyMissingTree(path, destination, copiedFiles, skippedFiles);
+                    } catch (Exception ex) {
+                        throw new IllegalStateException(ex);
+                    }
+                });
             }
-
-            Path currentSecureTokens = gameDir.resolve("secure-tokens.properties");
-            Path legacySecureTokens = legacyDir.resolve("secure-tokens.properties");
-            if (!Files.exists(currentSecureTokens) && Files.isRegularFile(legacySecureTokens)) {
-                Files.copy(legacySecureTokens, currentSecureTokens, StandardCopyOption.REPLACE_EXISTING);
-                migratedAnything = true;
-                appendLog("[Limecraft] Imported saved secure tokens from " + legacyDir);
-            }
-
-            if (selectedAccountId == null || selectedAccountId.isBlank()) {
-                String migratedSelectedAccountId = readSelectedAccountIdFrom(legacyDir.resolve(SETTINGS_FILE));
-                if (migratedSelectedAccountId != null && !migratedSelectedAccountId.isBlank()) {
-                    selectedAccountId = migratedSelectedAccountId;
-                    migratedAnything = true;
-                    appendLog("[Limecraft] Restored saved account selection from " + legacyDir);
-                }
-            }
-
-            if (migratedAnything) {
-                saveSettings();
+            if (copiedFiles[0] > 0) {
+                startupStorageMigrationMessage = "[Limecraft] Restored " + copiedFiles[0]
+                        + " file(s) from deprecated portable storage at " + source
+                        + " into " + target + ". Existing .limecraft files were kept.";
             }
         } catch (Exception ex) {
-            appendLog("[Limecraft] Failed to import saved auth state from " + legacyDir + ": " + ex.getMessage());
+            startupStorageMigrationMessage = "[Limecraft] Failed to restore deprecated portable storage from "
+                    + source + ": " + ex.getMessage();
         }
     }
 
-    private String readSelectedAccountIdFrom(Path settingsFile) {
-        if (settingsFile == null || !Files.isRegularFile(settingsFile)) {
-            return "";
-        }
-        try {
-            Properties props = new Properties();
-            try (var in = Files.newInputStream(settingsFile)) {
-                props.load(in);
-            }
-            String value = props.getProperty(KEY_SELECTED_ACCOUNT_ID, "");
-            return value == null ? "" : value.trim();
-        } catch (Exception ex) {
-            return "";
+    private boolean shouldMergeDeprecatedPortableFolder(Path path) {
+        Path fileName = path.getFileName();
+        return fileName != null && DEPRECATED_PORTABLE_MERGE_FOLDERS.contains(fileName.toString().toLowerCase(Locale.ROOT));
+    }
+
+    private void copyMissingTree(Path source, Path target, int[] copiedFiles, int[] skippedFiles) throws Exception {
+        try (Stream<Path> paths = Files.walk(source)) {
+            paths.forEach(path -> {
+                try {
+                    Path relative = source.relativize(path);
+                    Path destination = target.resolve(relative).normalize();
+                    if (!destination.startsWith(target)) {
+                        skippedFiles[0]++;
+                        return;
+                    }
+                    if (Files.isSymbolicLink(path)) {
+                        skippedFiles[0]++;
+                        return;
+                    }
+                    if (Files.isDirectory(path)) {
+                        Files.createDirectories(destination);
+                        return;
+                    }
+                    if (Files.exists(destination)) {
+                        skippedFiles[0]++;
+                        return;
+                    }
+                    Files.createDirectories(destination.getParent());
+                    Files.copy(path, destination);
+                    copiedFiles[0]++;
+                } catch (Exception ex) {
+                    throw new IllegalStateException(ex);
+                }
+            });
         }
     }
 
