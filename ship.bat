@@ -11,10 +11,10 @@ if errorlevel 1 exit /b 1
 powershell -ExecutionPolicy Bypass -File ".\tools\package-exe.ps1" -Name Limecraft -Dest %STAGE_DIR%
 if errorlevel 1 exit /b 1
 
-if exist ".\dist" (
-    powershell -ExecutionPolicy Bypass -Command "Remove-Item -LiteralPath '.\dist' -Recurse -Force"
+if exist ".\dist\Limecraft" (
+    powershell -ExecutionPolicy Bypass -Command "Remove-Item -LiteralPath '.\dist\Limecraft' -Recurse -Force"
     if errorlevel 1 (
-        echo Failed to replace .\dist. The existing packaged app is probably still open.
+        echo Failed to replace .\dist\Limecraft. The existing packaged app is probably still open.
         echo The fresh build is available in .\%STAGE_DIR%\Limecraft
         exit /b 1
     )

@@ -7,7 +7,7 @@ Limecraft is a custom Minecraft launcher built for Java Edition with a clean dar
 To run, download as a zip, extract into a folder, and run launch.bat
 To compile to an executable, download as zip, extract into a folder, and run ship.bat
 
-Worlds, assets, version, etc. are stored in `%USERPROFILE%/.Limecraft/`
+Packaged builds store launcher data next to the app image in `Limecraft-data` when that folder is writable. Development/non-portable runs use `data`, with `%USERPROFILE%/.limecraft` still used as a legacy fallback.
 
 <img width="1919" height="1008" alt="image" src="https://github.com/user-attachments/assets/b04fffbb-d70d-4473-a3fc-72846c15f8e4" />
 <img width="1919" height="1004" alt="image" src="https://github.com/user-attachments/assets/7416dce3-9065-4899-ab05-ab01e3f9b83b" />

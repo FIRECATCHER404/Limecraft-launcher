@@ -6,11 +6,14 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -154,14 +157,30 @@ public final class MinecraftInstallService {
         java.nio.file.Files.writeString(versionJson, meta.toString());
 
         listener.onProgress("Downloading client jar", 0.1);
-        String clientUrl = meta.getAsJsonObject("downloads").getAsJsonObject("client").get("url").getAsString();
-        downloader.downloadTo(clientUrl, versionDir.resolve(versionId + ".jar"));
+        if (!meta.has("downloads")
+                || !meta.get("downloads").isJsonObject()
+                || !meta.getAsJsonObject("downloads").has("client")
+                || !meta.getAsJsonObject("downloads").get("client").isJsonObject()) {
+            throw new IOException("Version " + versionId + " does not expose a client jar download.");
+        }
+        JsonObject clientDownload = meta.getAsJsonObject("downloads").getAsJsonObject("client");
+        String clientUrl = readString(clientDownload, "url");
+        downloadVerified(
+                clientUrl,
+                versionDir.resolve(versionId + ".jar"),
+                readString(clientDownload, "sha1"),
+                readLong(clientDownload, "size", -1L)
+        );
 
-        listener.onProgress("Downloading libraries", 0.25);
-        downloadLibraries(meta, listener);
+        if (meta.has("libraries") && meta.get("libraries").isJsonArray()) {
+            listener.onProgress("Downloading libraries", 0.25);
+            downloadLibraries(meta, listener);
+        }
 
-        listener.onProgress("Downloading assets", 0.7);
-        downloadAssets(meta, listener);
+        if (meta.has("assetIndex") && meta.get("assetIndex").isJsonObject()) {
+            listener.onProgress("Downloading assets", 0.7);
+            downloadAssets(meta, listener);
+        }
 
         writeDependencyMarker(meta);
         listener.onProgress("Install complete", 1.0);
@@ -206,9 +225,52 @@ public final class MinecraftInstallService {
         }
     }
 
+    public Path findVersionJson(String versionId) {
+        String id = versionId == null ? "" : versionId.trim();
+        Path local = gameDir.resolve("versions").resolve(id).resolve(id + ".json");
+        if (Files.isRegularFile(local)) {
+            return local;
+        }
+        Path legacy = legacyDataDir.resolve("versions").resolve(id).resolve(id + ".json");
+        if (Files.isRegularFile(legacy)) {
+            return legacy;
+        }
+        return local;
+    }
+
+    public Path findVersionJar(String versionId) {
+        String id = versionId == null ? "" : versionId.trim();
+        Path local = gameDir.resolve("versions").resolve(id).resolve(id + ".jar");
+        if (Files.isRegularFile(local)) {
+            return local;
+        }
+        Path legacy = legacyDataDir.resolve("versions").resolve(id).resolve(id + ".jar");
+        if (Files.isRegularFile(legacy)) {
+            return legacy;
+        }
+        return local;
+    }
+
+    public boolean versionInstalled(String versionId) {
+        return Files.isRegularFile(findVersionJson(versionId)) && Files.isRegularFile(findVersionJar(versionId));
+    }
+
+    public JsonObject loadInstalledVersionMeta(String versionId) throws IOException {
+        Path json = findVersionJson(versionId);
+        if (!Files.isRegularFile(json)) {
+            throw new IOException("Missing installed version metadata for " + versionId);
+        }
+        return JsonParser.parseString(Files.readString(json, StandardCharsets.UTF_8)).getAsJsonObject();
+    }
+
     private void downloadLibraries(JsonObject versionMeta, ProgressListener listener) throws IOException {
-        JsonArray libs = versionMeta.getAsJsonArray("libraries");
+        JsonArray libs = versionMeta.has("libraries") && versionMeta.get("libraries").isJsonArray()
+                ? versionMeta.getAsJsonArray("libraries")
+                : new JsonArray();
         int total = libs.size();
+        if (total == 0) {
+            return;
+        }
         int i = 0;
         String os = detectOs();
 
@@ -222,16 +284,16 @@ public final class MinecraftInstallService {
             LibraryArtifact artifact = resolveMainArtifact(lib);
             if (artifact != null) {
                 Path out = gameDir.resolve("libraries").resolve(artifact.path());
-                if (!Files.exists(out) && resolveExistingLibraryPath(artifact.path()) == null) {
-                    downloader.downloadTo(artifact.url(), out);
+                if (resolveExistingLibraryPath(artifact) == null) {
+                    downloadVerified(artifact.url(), out, artifact.sha1(), artifact.size());
                 }
             }
 
             LibraryArtifact nativeArtifact = resolveNativeArtifact(lib, os);
             if (nativeArtifact != null) {
                 Path out = gameDir.resolve("libraries").resolve(nativeArtifact.path());
-                if (!Files.exists(out) && resolveExistingLibraryPath(nativeArtifact.path()) == null) {
-                    downloader.downloadTo(nativeArtifact.url(), out);
+                if (resolveExistingLibraryPath(nativeArtifact) == null) {
+                    downloadVerified(nativeArtifact.url(), out, nativeArtifact.sha1(), nativeArtifact.size());
                 }
             }
             listener.onProgress("Libraries: " + i + "/" + total, 0.25 + (0.4 * ((double) i / total)));
@@ -241,7 +303,12 @@ public final class MinecraftInstallService {
     private LibraryArtifact resolveMainArtifact(JsonObject lib) {
         if (lib.has("downloads") && lib.getAsJsonObject("downloads").has("artifact")) {
             JsonObject artifact = lib.getAsJsonObject("downloads").getAsJsonObject("artifact");
-            return new LibraryArtifact(artifact.get("path").getAsString(), artifact.get("url").getAsString());
+            return new LibraryArtifact(
+                    readString(artifact, "path"),
+                    readString(artifact, "url"),
+                    readString(artifact, "sha1"),
+                    readLong(artifact, "size", -1L)
+            );
         }
         if (!lib.has("name")) {
             return null;
@@ -253,7 +320,7 @@ public final class MinecraftInstallService {
         }
         String path = toMavenPath(lib.get("name").getAsString());
         String base = normalizeRepositoryBase(lib);
-        return new LibraryArtifact(path, base + path);
+        return new LibraryArtifact(path, base + path, "", -1L);
     }
 
     private LibraryArtifact resolveNativeArtifact(JsonObject lib, String os) {
@@ -265,8 +332,10 @@ public final class MinecraftInstallService {
             }
             JsonObject nativeArtifact = classifiers.getAsJsonObject(chosenKey);
             return new LibraryArtifact(
-                    nativeArtifact.get("path").getAsString(),
-                    nativeArtifact.get("url").getAsString()
+                    readString(nativeArtifact, "path"),
+                    readString(nativeArtifact, "url"),
+                    readString(nativeArtifact, "sha1"),
+                    readLong(nativeArtifact, "size", -1L)
             );
         }
         if (!lib.has("name") || !lib.has("natives") || !lib.get("natives").isJsonObject()) {
@@ -279,7 +348,7 @@ public final class MinecraftInstallService {
         String classifier = natives.get(os).getAsString().replace("${arch}", detectArchitectureBits());
         String path = toMavenPath(appendClassifier(lib.get("name").getAsString(), classifier));
         String base = normalizeRepositoryBase(lib);
-        return new LibraryArtifact(path, base + path);
+        return new LibraryArtifact(path, base + path, "", -1L);
     }
 
     private String chooseNativeClassifierKey(JsonObject classifiers, String os) {
@@ -368,17 +437,29 @@ public final class MinecraftInstallService {
     }
 
     private void downloadAssets(JsonObject versionMeta, ProgressListener listener) throws IOException {
+        if (versionMeta == null || !versionMeta.has("assetIndex") || !versionMeta.get("assetIndex").isJsonObject()) {
+            return;
+        }
         JsonObject assetIndex = versionMeta.getAsJsonObject("assetIndex");
-        String url = assetIndex.get("url").getAsString();
+        String url = readString(assetIndex, "url");
+        String assetId = readString(assetIndex, "id");
+        if (url.isBlank() || assetId.isBlank()) {
+            return;
+        }
         JsonObject indexJson = http.getJson(url);
 
-        String assetId = assetIndex.get("id").getAsString();
         Path indexes = gameDir.resolve("assets").resolve("indexes");
         java.nio.file.Files.createDirectories(indexes);
         java.nio.file.Files.writeString(indexes.resolve(assetId + ".json"), indexJson.toString());
 
+        if (!indexJson.has("objects") || !indexJson.get("objects").isJsonObject()) {
+            return;
+        }
         JsonObject objects = indexJson.getAsJsonObject("objects");
         int total = objects.entrySet().size();
+        if (total == 0) {
+            return;
+        }
         int i = 0;
         for (var e : objects.entrySet()) {
             i++;
@@ -387,8 +468,9 @@ public final class MinecraftInstallService {
             String prefix = hash.substring(0, 2);
             String objectUrl = "https://resources.download.minecraft.net/" + prefix + "/" + hash;
             Path out = gameDir.resolve("assets").resolve("objects").resolve(prefix).resolve(hash);
-            if (!Files.exists(out) && resolveExistingAssetObjectPath(hash) == null) {
-                downloader.downloadTo(objectUrl, out);
+            long size = readLong(o, "size", -1L);
+            if (resolveExistingAssetObjectPath(hash, size) == null) {
+                downloadVerified(objectUrl, out, hash, size);
             }
             if (i % 150 == 0 || i == total) {
                 listener.onProgress("Assets: " + i + "/" + total, 0.7 + (0.28 * ((double) i / total)));
@@ -471,11 +553,11 @@ public final class MinecraftInstallService {
                     continue;
                 }
                 LibraryArtifact artifact = resolveMainArtifact(lib);
-                if (artifact != null && resolveExistingLibraryPath(artifact.path()) == null) {
+                if (artifact != null && resolveExistingLibraryPath(artifact) == null) {
                     return false;
                 }
                 LibraryArtifact nativeArtifact = resolveNativeArtifact(lib, os);
-                if (nativeArtifact != null && resolveExistingLibraryPath(nativeArtifact.path()) == null) {
+                if (nativeArtifact != null && resolveExistingLibraryPath(nativeArtifact) == null) {
                     return false;
                 }
             }
@@ -520,7 +602,8 @@ public final class MinecraftInstallService {
         for (var entry : indexJson.getAsJsonObject("objects").entrySet()) {
             JsonObject object = entry.getValue().getAsJsonObject();
             String hash = readString(object, "hash");
-            if (hash.isBlank() || resolveExistingAssetObjectPath(hash) == null) {
+            long size = readLong(object, "size", -1L);
+            if (hash.isBlank() || resolveExistingAssetObjectPath(hash, size) == null) {
                 return false;
             }
         }
@@ -561,6 +644,21 @@ public final class MinecraftInstallService {
         return null;
     }
 
+    private Path resolveExistingLibraryPath(LibraryArtifact artifact) {
+        if (artifact == null || artifact.path().isBlank()) {
+            return null;
+        }
+        Path local = gameDir.resolve("libraries").resolve(artifact.path());
+        if (fileMatches(local, artifact.sha1(), artifact.size())) {
+            return local;
+        }
+        Path legacy = legacyDataDir.resolve("libraries").resolve(artifact.path());
+        if (fileMatches(legacy, artifact.sha1(), artifact.size())) {
+            return legacy;
+        }
+        return null;
+    }
+
     private Path resolveExistingAssetIndexPath(String assetId) {
         if (assetId == null || assetId.isBlank()) {
             return null;
@@ -577,19 +675,73 @@ public final class MinecraftInstallService {
     }
 
     private Path resolveExistingAssetObjectPath(String hash) {
+        return resolveExistingAssetObjectPath(hash, -1L);
+    }
+
+    private Path resolveExistingAssetObjectPath(String hash, long expectedSize) {
         if (hash == null || hash.isBlank() || hash.length() < 2) {
             return null;
         }
         String prefix = hash.substring(0, 2);
         Path local = gameDir.resolve("assets").resolve("objects").resolve(prefix).resolve(hash);
-        if (Files.exists(local)) {
+        if (fileMatches(local, hash, expectedSize)) {
             return local;
         }
         Path legacy = legacyDataDir.resolve("assets").resolve("objects").resolve(prefix).resolve(hash);
-        if (Files.exists(legacy)) {
+        if (fileMatches(legacy, hash, expectedSize)) {
             return legacy;
         }
         return null;
+    }
+
+    private void downloadVerified(String url, Path target, String expectedSha1, long expectedSize) throws IOException {
+        if (url == null || url.isBlank()) {
+            throw new IOException("Missing download URL for " + target);
+        }
+        downloader.downloadTo(url, target);
+        if (!fileMatches(target, expectedSha1, expectedSize)) {
+            try {
+                Files.deleteIfExists(target);
+            } catch (IOException ignored) {
+            }
+            throw new IOException("Downloaded file failed verification: " + target.getFileName());
+        }
+    }
+
+    private boolean fileMatches(Path file, String expectedSha1, long expectedSize) {
+        if (file == null || !Files.isRegularFile(file)) {
+            return false;
+        }
+        try {
+            if (expectedSize >= 0 && Files.size(file) != expectedSize) {
+                return false;
+            }
+            if (expectedSha1 != null && !expectedSha1.isBlank()) {
+                return expectedSha1.equalsIgnoreCase(sha1(file));
+            }
+            return true;
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private String sha1(Path file) throws IOException {
+        MessageDigest digest;
+        try {
+            digest = MessageDigest.getInstance("SHA-1");
+        } catch (Exception ex) {
+            throw new IOException("SHA-1 verification is unavailable.", ex);
+        }
+        byte[] buffer = new byte[64 * 1024];
+        try (InputStream in = Files.newInputStream(file)) {
+            int read;
+            while ((read = in.read(buffer)) >= 0) {
+                if (read > 0) {
+                    digest.update(buffer, 0, read);
+                }
+            }
+        }
+        return HexFormat.of().formatHex(digest.digest());
     }
 
     private String dependencySignature(JsonObject versionMeta) {
@@ -619,10 +771,21 @@ public final class MinecraftInstallService {
         }
     }
 
+    private long readLong(JsonObject object, String key, long fallback) {
+        if (object == null || key == null || key.isBlank() || !object.has(key)) {
+            return fallback;
+        }
+        try {
+            return object.get(key).getAsLong();
+        } catch (Exception ex) {
+            return fallback;
+        }
+    }
+
     @FunctionalInterface
     public interface ProgressListener {
         void onProgress(String message, double progress);
     }
 
-    private record LibraryArtifact(String path, String url) {}
+    private record LibraryArtifact(String path, String url, String sha1, long size) {}
 }

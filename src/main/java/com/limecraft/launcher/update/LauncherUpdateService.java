@@ -73,7 +73,9 @@ public final class LauncherUpdateService {
         }
 
         Path scriptPath = appPaths.siblingPath("-apply-update.ps1");
-        String appName = appPaths.appRoot().getFileName() == null ? AppVersion.APP_NAME : appPaths.appRoot().getFileName().toString();
+        String executableName = appPaths.executablePath().getFileName() == null
+                ? AppVersion.APP_NAME + ".exe"
+                : appPaths.executablePath().getFileName().toString();
         String script = """
                 $ErrorActionPreference = 'Stop'
                 $pidToWait = %d
@@ -118,8 +120,8 @@ public final class LauncherUpdateService {
                     if ($null -eq $packageRoot) {
                         throw 'The update zip did not contain a packaged app folder.'
                     }
-                    if (-not (Test-Path (Join-Path $packageRoot.FullName '%s.exe'))) {
-                        throw 'The update zip is missing %s.exe.'
+                    if (-not (Test-Path (Join-Path $packageRoot.FullName '%s'))) {
+                        throw 'The update zip is missing %s.'
                     }
                     if (-not (Test-Path (Join-Path $packageRoot.FullName 'app'))) {
                         throw 'The update zip is missing the app folder.'
@@ -161,8 +163,8 @@ public final class LauncherUpdateService {
                 escapePowerShellLiteral(releaseInfo.asset().downloadUrl()),
                 escapePowerShellLiteral(releaseInfo.htmlUrl().isBlank() ? AppVersion.RELEASES_URL : releaseInfo.htmlUrl()),
                 escapePowerShellLiteral(AppVersion.userAgent()),
-                escapePowerShellLiteral(appName),
-                escapePowerShellLiteral(appName)
+                escapePowerShellLiteral(executableName),
+                escapePowerShellLiteral(executableName)
         );
         Files.writeString(scriptPath, script, StandardCharsets.UTF_8);
         return scriptPath;

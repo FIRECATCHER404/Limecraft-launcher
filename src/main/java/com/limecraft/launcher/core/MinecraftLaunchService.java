@@ -12,6 +12,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -24,6 +25,7 @@ import java.util.jar.JarFile;
 import java.util.jar.Manifest;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Stream;
 import java.util.zip.ZipEntry;
 
 public final class MinecraftLaunchService {
@@ -53,6 +55,7 @@ public final class MinecraftLaunchService {
 
         Path nativesDir = gameDir.resolve("natives").resolve(versionId);
         Files.createDirectories(nativesDir);
+        clearDirectoryContents(nativesDir);
         extractNatives(effectiveMeta, nativesDir, os);
 
         Map<String, String> vars = buildVariables(effectiveMeta, account, offlineUsername, classpathEntries, nativesDir, instanceDir, versionId, includeLimecraftSuffix, hideCustomSuffix);
@@ -495,32 +498,32 @@ public final class MinecraftLaunchService {
                 ? meta.getAsJsonArray("libraries")
                 : new JsonArray();
 
-        String key = switch (os) {
-            case "windows" -> "natives-windows";
-            case "osx" -> "natives-macos";
-            default -> "natives-linux";
-        };
-
+        Path root = nativesDir.toAbsolutePath().normalize();
         for (JsonElement libEl : libs) {
             JsonObject lib = libEl.getAsJsonObject();
+            if (!isLibraryAllowed(lib, os)) {
+                continue;
+            }
             if (!lib.has("downloads") || !lib.getAsJsonObject("downloads").has("classifiers")) {
                 continue;
             }
             JsonObject classifiers = lib.getAsJsonObject("downloads").getAsJsonObject("classifiers");
-            String fallbackKey = "osx".equals(os) ? "natives-osx" : key;
-            String chosenKey = classifiers.has(key) ? key : fallbackKey;
-            if (!classifiers.has(chosenKey)) {
+            String chosenKey = chooseNativeClassifierKey(classifiers, os);
+            if (chosenKey == null) {
                 continue;
             }
-            String path = classifiers.getAsJsonObject(chosenKey).get("path").getAsString();
-            Path nativeJar = gameDir.resolve("libraries").resolve(path);
-            if (!Files.exists(nativeJar)) {
+            String path = readString(classifiers.getAsJsonObject(chosenKey), "path");
+            if (path.isBlank()) {
+                continue;
+            }
+            Path nativeJar = resolveExistingLibraryPath(path);
+            if (nativeJar == null || !Files.exists(nativeJar)) {
                 Path fallbackJar = fallbackNativeJar(nativeJar);
                 if (fallbackJar != null) {
                     nativeJar = fallbackJar;
                 }
             }
-            if (!Files.exists(nativeJar)) {
+            if (nativeJar == null || !Files.exists(nativeJar)) {
                 continue;
             }
             try (JarFile jar = new JarFile(nativeJar.toFile())) {
@@ -531,8 +534,8 @@ public final class MinecraftLaunchService {
                     if (entry.isDirectory() || name.startsWith("META-INF")) {
                         continue;
                     }
-                    Path out = nativesDir.resolve(name).normalize();
-                    if (!out.startsWith(nativesDir)) {
+                    Path out = root.resolve(name).normalize();
+                    if (!out.startsWith(root)) {
                         continue;
                     }
                     Files.createDirectories(out.getParent());
@@ -607,6 +610,57 @@ public final class MinecraftLaunchService {
             return jar.getEntry(entryName) != null;
         } catch (IOException ignored) {
             return false;
+        }
+    }
+
+    private String chooseNativeClassifierKey(JsonObject classifiers, String os) {
+        String base = switch (os) {
+            case "windows" -> "natives-windows";
+            case "osx" -> "natives-macos";
+            default -> "natives-linux";
+        };
+        String fallback = "osx".equals(os) ? "natives-osx" : base;
+        String arch = detectArchitectureBits();
+        String[] preferred = new String[] {
+                base + "-" + arch,
+                base,
+                fallback + "-" + arch,
+                fallback
+        };
+        for (String key : preferred) {
+            if (classifiers.has(key)) {
+                return key;
+            }
+        }
+        for (var entry : classifiers.entrySet()) {
+            String key = entry.getKey();
+            if (key.startsWith(base + "-") || key.startsWith(fallback + "-")) {
+                return key;
+            }
+        }
+        return null;
+    }
+
+    private String detectArchitectureBits() {
+        String arch = System.getProperty("os.arch", "").toLowerCase();
+        return arch.contains("64") ? "64" : "32";
+    }
+
+    private void clearDirectoryContents(Path dir) throws IOException {
+        Path nativesRoot = gameDir.resolve("natives").toAbsolutePath().normalize();
+        Path root = dir.toAbsolutePath().normalize();
+        if (!root.startsWith(nativesRoot)) {
+            throw new IOException("Refusing to clear natives outside the Limecraft natives folder: " + root);
+        }
+        if (!Files.isDirectory(root)) {
+            return;
+        }
+        try (Stream<Path> stream = Files.walk(root)) {
+            for (Path path : stream.sorted(Comparator.reverseOrder()).toList()) {
+                if (!path.equals(root)) {
+                    Files.deleteIfExists(path);
+                }
+            }
         }
     }
 

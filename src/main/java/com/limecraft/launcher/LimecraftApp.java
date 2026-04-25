@@ -13,6 +13,7 @@ import com.limecraft.launcher.core.AppPaths;
 import com.limecraft.launcher.core.AppVersion;
 import com.limecraft.launcher.core.BackupService;
 import com.limecraft.launcher.core.CrashReportAnalyzer;
+import com.limecraft.launcher.core.Downloader;
 import com.limecraft.launcher.core.HttpClient;
 import com.limecraft.launcher.core.JavaRuntimeService;
 import com.limecraft.launcher.core.LauncherJobExecutor;
@@ -101,8 +102,6 @@ public final class LimecraftApp extends Application {
     private static final String MICROSOFT_CLIENT_ID = "ba5cdd7c-bc36-4702-9613-35f14f83e52c";
     private static final String JAVA_PATCH_NOTES_INDEX_URL = "https://launchercontent.mojang.com/v2/javaPatchNotes.json";
     private static final String JAVA_PATCH_NOTES_BASE_URL = "https://launchercontent.mojang.com/v2/";
-    private static final boolean SHARED_CLIENT_WORKSPACE = false;
-
     private final AppPaths appPaths = AppPaths.detect();
     private final LauncherJobExecutor io = new LauncherJobExecutor(4);
     private final Path gameDir = appPaths.dataDir();
@@ -118,12 +117,19 @@ public final class LimecraftApp extends Application {
     private final ModrinthService modrinthService = new ModrinthService(http.raw());
     private final ModloaderInstallService modloaderInstallService = new ModloaderInstallService(http, installService, gameDir);
     private final LauncherUpdateService updateService = new LauncherUpdateService(http.raw());
+    private final Object clientLogBufferLock = new Object();
+    private final StringBuilder clientLogBuffer = new StringBuilder();
+    private final Object serverLogBufferLock = new Object();
+    private final StringBuilder serverLogBuffer = new StringBuilder();
 
     private MinecraftAccount signedInAccount;
     private Stage primaryStage;
     private LauncherShell launcherShell;
     private LauncherUpdateService.ReleaseInfo availableUpdate;
     private String lastLauncherErrorSummary = "";
+    private volatile boolean restoreLauncherAfterGameExit;
+    private boolean clientLogFlushScheduled;
+    private boolean serverLogFlushScheduled;
 
     private ListView<VersionEntry> versionsList;
     private Label status;
@@ -184,8 +190,6 @@ public final class LimecraftApp extends Application {
     private String selectedAccountId = "";
     private volatile boolean microsoftSignInInProgress;
     private volatile boolean loadingServerSettings;
-    private volatile boolean legacyManagedVersionImportAttempted;
-    private volatile boolean legacyInstanceImportAttempted;
     private boolean includeLimecraftSuffix = true;
     private final List<String> recentVersions = new ArrayList<>();
     private long currentGameLaunchStartedAtMillis;
@@ -333,7 +337,11 @@ public final class LimecraftApp extends Application {
                     }
                 });
                 duplicateItem.setOnAction(e -> {
-                    setStatus("Manual custom versions are disabled because the client workspace is shared.", 0);
+                    VersionEntry selected = getItem();
+                    if (selected == null) {
+                        return;
+                    }
+                    openAddVersionDialog(selected, null);
                 });
                 showChangelogItem.setOnAction(e -> {
                     VersionEntry selected = getItem();
@@ -365,10 +373,6 @@ public final class LimecraftApp extends Application {
                         openWorldTransferDialog(selected);
                     }
                 });
-                duplicateItem.setDisable(SHARED_CLIENT_WORKSPACE);
-                if (SHARED_CLIENT_WORKSPACE) {
-                    builtinMenu.getItems().remove(duplicateItem);
-                }
             }
 
             @Override
@@ -1104,10 +1108,6 @@ public final class LimecraftApp extends Application {
     }
 
     private void openAddVersionDialog(VersionEntry duplicateBase, VersionEntry editingVersion) {
-        if (SHARED_CLIENT_WORKSPACE) {
-            setStatus("Manual custom versions are disabled because the client workspace is shared.", 0);
-            return;
-        }
         Stage dialog = new Stage();
         dialog.initModality(Modality.APPLICATION_MODAL);
         dialog.setTitle(editingVersion != null ? "Edit Version" : "Add Version");
@@ -1492,15 +1492,6 @@ public final class LimecraftApp extends Application {
         }
     }
 
-    private JsonArray getJsonArray(String url) throws Exception {
-        okhttp3.Request request = new okhttp3.Request.Builder().url(url).get().build();
-        try (okhttp3.Response response = http.raw().newCall(request).execute()) {
-            if (!response.isSuccessful() || response.body() == null) {
-                throw new IllegalStateException("HTTP " + response.code() + " for " + url);
-            }
-            return JsonParser.parseString(response.body().string()).getAsJsonArray();
-        }
-    }
     private Path chooseFile(String title, String extName, String extPattern) {
         FileChooser chooser = new FileChooser();
         chooser.setTitle(title);
@@ -1530,8 +1521,8 @@ public final class LimecraftApp extends Application {
                 throw new IllegalStateException("Base version is required for Add to JAR mode.");
             }
             ensureBaseInstalled(base);
-            Path baseManifest = gameDir.resolve("versions").resolve(base.id()).resolve(base.id() + ".json");
-            baseJarSource = gameDir.resolve("versions").resolve(base.id()).resolve(base.id() + ".jar");
+            Path baseManifest = findVersionJson(base.id());
+            baseJarSource = findVersionJar(base.id());
             manifestSource = manifestOverride != null ? manifestOverride : baseManifest;
             jarSource = baseJarSource;
             overlayJar = jarOverride;
@@ -1540,7 +1531,7 @@ public final class LimecraftApp extends Application {
                 throw new IllegalStateException("Base version is required for Replace JAR mode.");
             }
             ensureBaseInstalled(base);
-            Path baseManifest = gameDir.resolve("versions").resolve(base.id()).resolve(base.id() + ".json");
+            Path baseManifest = findVersionJson(base.id());
             manifestSource = manifestOverride != null ? manifestOverride : baseManifest;
             jarSource = jarOverride;
         } else {
@@ -1549,10 +1540,10 @@ public final class LimecraftApp extends Application {
             if (base != null) {
                 ensureBaseInstalled(base);
                 if (manifestSource == null) {
-                    manifestSource = gameDir.resolve("versions").resolve(base.id()).resolve(base.id() + ".json");
+                    manifestSource = findVersionJson(base.id());
                 }
                 if (jarSource == null) {
-                    jarSource = gameDir.resolve("versions").resolve(base.id()).resolve(base.id() + ".jar");
+                    jarSource = findVersionJar(base.id());
                 }
             }
         }
@@ -1637,10 +1628,6 @@ public final class LimecraftApp extends Application {
         return version != null && "custom".equalsIgnoreCase(version.type());
     }
 
-    private boolean isFabricVersion(VersionEntry version) {
-        return version != null && "fabric".equalsIgnoreCase(version.type());
-    }
-
     private boolean isManagedVersion(VersionEntry version) {
         return isModdedVersion(version) || isCustomVersion(version);
     }
@@ -1662,8 +1649,8 @@ public final class LimecraftApp extends Application {
 
         io.submit(() -> {
             try {
-                Path versionDir = gameDir.resolve("versions").resolve(version.id());
-                Path instanceDir = SHARED_CLIENT_WORKSPACE ? null : gameDir.resolve("instances").resolve(version.id().replaceAll("[\\/:*?\"<>|]", "_"));
+                Path versionDir = existingVersionDirForId(version.id());
+                Path instanceDir = existingInstanceDirFor(version);
                 Path backup = backupService.snapshotVersion(version.id(), versionDir, instanceDir);
                 deleteDirectoryIfExists(versionDir);
                 if (instanceDir != null) {
@@ -1709,9 +1696,8 @@ public final class LimecraftApp extends Application {
         }
     }
     private void ensureBaseInstalled(VersionEntry base) throws Exception {
-        Path baseDir = gameDir.resolve("versions").resolve(base.id());
-        boolean hasJson = Files.exists(baseDir.resolve(base.id() + ".json"));
-        boolean hasJar = Files.exists(baseDir.resolve(base.id() + ".jar"));
+        boolean hasJson = Files.exists(findVersionJson(base.id()));
+        boolean hasJar = versionJarExists(base.id());
         if (hasJson && hasJar) {
             return;
         }
@@ -1727,16 +1713,10 @@ public final class LimecraftApp extends Application {
     }
 
     private Path instanceDirForId(String versionId) {
-        if (SHARED_CLIENT_WORKSPACE) {
-            return gameDir.resolve("client");
-        }
         return gameDir.resolve("instances").resolve(safeFolderName(versionId));
     }
 
     private Path legacyInstanceDirForId(String versionId) {
-        if (SHARED_CLIENT_WORKSPACE) {
-            return appPaths.legacyDataDir().resolve("client");
-        }
         return appPaths.legacyDataDir().resolve("instances").resolve(safeFolderName(versionId));
     }
 
@@ -1758,6 +1738,18 @@ public final class LimecraftApp extends Application {
 
     private Path activeInstanceDirFor(VersionEntry version) {
         return existingInstanceDirFor(version);
+    }
+
+    private Path existingVersionDirForId(String versionId) {
+        Path local = gameDir.resolve("versions").resolve(versionId);
+        if (Files.isDirectory(local)) {
+            return local;
+        }
+        Path legacy = appPaths.legacyDataDir().resolve("versions").resolve(versionId);
+        if (Files.isDirectory(legacy)) {
+            return legacy;
+        }
+        return local;
     }
 
     private Path worldsDirFor(VersionEntry version) {
@@ -2001,10 +1993,6 @@ public final class LimecraftApp extends Application {
     }
 
     private void openWorldTransferDialog(VersionEntry source) {
-        if (SHARED_CLIENT_WORKSPACE) {
-            setStatus("World transfer is not needed because the client workspace is shared.", 0);
-            return;
-        }
         if (source == null) {
             setStatus("Select a version first.", 0);
             return;
@@ -2340,15 +2328,11 @@ public final class LimecraftApp extends Application {
     }
 
     private Path findVersionJson(String versionId) {
-        Path localJson = gameDir.resolve("versions").resolve(versionId).resolve(versionId + ".json");
-        if (Files.exists(localJson)) {
-            return localJson;
-        }
-        Path legacyJson = appPaths.legacyDataDir().resolve("versions").resolve(versionId).resolve(versionId + ".json");
-        if (Files.exists(legacyJson)) {
-            return legacyJson;
-        }
-        return localJson;
+        return installService.findVersionJson(versionId);
+    }
+
+    private Path findVersionJar(String versionId) {
+        return installService.findVersionJar(versionId);
     }
 
     private Path logsDirFor(VersionEntry version) {
@@ -2391,8 +2375,8 @@ public final class LimecraftApp extends Application {
             try {
                 Path snapshot = backupService.snapshotVersion(
                         version.id(),
-                        gameDir.resolve("versions").resolve(version.id()),
-                        instanceDirFor(version)
+                        existingVersionDirForId(version.id()),
+                        activeInstanceDirFor(version)
                 );
                 setStatus(snapshot == null
                         ? "Nothing to snapshot for " + version.id()
@@ -2409,7 +2393,7 @@ public final class LimecraftApp extends Application {
             try {
                 Platform.runLater(() -> {
                     try {
-                        CrashReportAnalyzer.DiagnosisReport diagnosis = crashReportAnalyzer.analyze(instanceDirFor(version));
+                        CrashReportAnalyzer.DiagnosisReport diagnosis = crashReportAnalyzer.analyze(activeInstanceDirFor(version));
                         showDiagnosisDialog("Crash Diagnosis: " + version.id(), diagnosis);
                     } catch (Exception ex) {
                         fail(ex);
@@ -2687,106 +2671,6 @@ public final class LimecraftApp extends Application {
         return merged;
     }
 
-    private void importLegacyManagedVersions() {
-        if (legacyManagedVersionImportAttempted) {
-            return;
-        }
-        legacyManagedVersionImportAttempted = true;
-
-        Path legacyDir = appPaths.legacyDataDir();
-        if (legacyDir == null || legacyDir.equals(gameDir)) {
-            return;
-        }
-
-        Path legacyVersionsDir = legacyDir.resolve("versions");
-        if (!Files.isDirectory(legacyVersionsDir)) {
-            return;
-        }
-
-        Path targetVersionsDir = gameDir.resolve("versions");
-        int importedCount = 0;
-        try {
-            Files.createDirectories(targetVersionsDir);
-            try (Stream<Path> stream = Files.list(legacyVersionsDir)) {
-                for (Path sourceDir : stream.filter(Files::isDirectory).toList()) {
-                    String id = sourceDir.getFileName().toString();
-                    Path sourceJson = sourceDir.resolve(id + ".json");
-                    if (!Files.exists(sourceJson)) {
-                        continue;
-                    }
-
-                    JsonObject meta;
-                    try {
-                        meta = JsonParser.parseString(Files.readString(sourceJson)).getAsJsonObject();
-                    } catch (Exception ignored) {
-                        continue;
-                    }
-
-                    String type = meta.has("type") ? meta.get("type").getAsString() : "";
-                    String loader = detectLoaderFamilyFromMetadata(meta, type);
-                    if ("vanilla".equalsIgnoreCase(loader)) {
-                        continue;
-                    }
-
-                    Path targetDir = targetVersionsDir.resolve(id);
-                    if (Files.isDirectory(targetDir)) {
-                        continue;
-                    }
-
-                    copyDirectory(sourceDir, targetDir);
-                    importedCount++;
-                }
-            }
-        } catch (Exception ex) {
-            appendLog("[Limecraft] Failed to import local versions from " + legacyDir + ": " + ex.getMessage());
-            return;
-        }
-
-        if (importedCount > 0) {
-            appendLog("[Limecraft] Imported " + importedCount + " local version(s) from " + legacyDir);
-        }
-    }
-
-    private void importLegacyInstanceFolders() {
-        if (legacyInstanceImportAttempted) {
-            return;
-        }
-        legacyInstanceImportAttempted = true;
-
-        Path legacyDir = appPaths.legacyDataDir();
-        if (legacyDir == null || legacyDir.equals(gameDir)) {
-            return;
-        }
-
-        Path legacyInstancesDir = legacyDir.resolve("instances");
-        if (!Files.isDirectory(legacyInstancesDir)) {
-            return;
-        }
-
-        Path targetInstancesDir = gameDir.resolve("instances");
-        int importedCount = 0;
-        try {
-            Files.createDirectories(targetInstancesDir);
-            try (Stream<Path> stream = Files.list(legacyInstancesDir)) {
-                for (Path sourceDir : stream.filter(Files::isDirectory).toList()) {
-                    Path targetDir = targetInstancesDir.resolve(sourceDir.getFileName().toString());
-                    if (Files.exists(targetDir)) {
-                        continue;
-                    }
-                    copyDirectory(sourceDir, targetDir);
-                    importedCount++;
-                }
-            }
-        } catch (Exception ex) {
-            appendLog("[Limecraft] Failed to import legacy instance folders from " + legacyDir + ": " + ex.getMessage());
-            return;
-        }
-
-        if (importedCount > 0) {
-            appendLog("[Limecraft] Imported " + importedCount + " legacy instance folder(s) into " + appPaths.storageModeLabel() + " storage");
-        }
-    }
-
     private List<VersionEntry> loadCustomVersions() {
         List<VersionEntry> custom = new ArrayList<>();
         Set<String> seenIds = new LinkedHashSet<>();
@@ -3030,13 +2914,7 @@ public final class LimecraftApp extends Application {
         }
         String serverUrl = meta.getAsJsonObject("downloads").getAsJsonObject("server").get("url").getAsString();
 
-        okhttp3.Request request = new okhttp3.Request.Builder().url(serverUrl).get().build();
-        try (okhttp3.Response response = http.raw().newCall(request).execute()) {
-            if (!response.isSuccessful() || response.body() == null) {
-                throw new IllegalStateException("Failed to download server jar: HTTP " + response.code());
-            }
-            Files.write(serverJar, response.body().bytes());
-        }
+        new Downloader(http.raw()).downloadTo(serverUrl, serverJar);
         appendServerLog("[Limecraft] Server download complete");
         return serverJar;
     }
@@ -3085,7 +2963,10 @@ public final class LimecraftApp extends Application {
         }
         io.submit(() -> {
             try {
-                ServerProfileSettings settings = serverProfileStore.load(serverDirFor(version), javaPathField == null ? "java" : javaPathField.getText());
+                String defaultJava = serverJavaPathField == null || serverJavaPathField.getText() == null || serverJavaPathField.getText().trim().isBlank()
+                        ? "java"
+                        : serverJavaPathField.getText().trim();
+                ServerProfileSettings settings = serverProfileStore.load(serverDirFor(version), defaultJava);
                 Platform.runLater(() -> applyServerSettings(settings));
             } catch (Exception ex) {
                 appendServerLog("[Limecraft] Failed to load saved server profile: " + ex.getMessage());
@@ -3206,10 +3087,22 @@ public final class LimecraftApp extends Application {
         }
         appendServerLog("[Limecraft] Force-killing server process...");
         closeServerCommandWriter();
-        destroyProcessTree(process);
-        if (process.isAlive()) {
-            appendServerLog("[Limecraft] Server process is still running after kill attempt.");
-        }
+        io.submit(() -> {
+            boolean killed = terminateProcessTree(process, this::appendServerLog);
+            Platform.runLater(() -> {
+                if (killed) {
+                    if (currentServerProcess == process) {
+                        currentServerProcess = null;
+                    }
+                    setServerRunning(false);
+                    setStatus("Server process killed", 0);
+                } else {
+                    appendServerLog("[Limecraft] Server process is still running after kill attempt.");
+                    setServerRunning(true);
+                    setStatus("Failed to kill server process", 0);
+                }
+            });
+        });
     }
 
     private void closeServerCommandWriter() {
@@ -3222,6 +3115,44 @@ public final class LimecraftApp extends Application {
             writer.close();
         } catch (Exception ignored) {
         }
+    }
+
+    private boolean terminateProcessTree(Process process, java.util.function.Consumer<String> log) {
+        if (process == null) {
+            return true;
+        }
+        if (!process.isAlive()) {
+            return true;
+        }
+        if (isWindowsPlatform()) {
+            try {
+                Process taskkill = new ProcessBuilder(
+                        "taskkill.exe",
+                        "/PID", Long.toString(process.pid()),
+                        "/T",
+                        "/F"
+                ).redirectErrorStream(true).start();
+                String output;
+                try (InputStream in = taskkill.getInputStream()) {
+                    output = new String(in.readAllBytes(), StandardCharsets.UTF_8).trim();
+                }
+                taskkill.waitFor(10, TimeUnit.SECONDS);
+                if (!output.isBlank()) {
+                    log.accept("[Limecraft] " + output.replace(System.lineSeparator(), " "));
+                }
+            } catch (Exception ex) {
+                log.accept("[Limecraft] taskkill failed: " + ex.getMessage());
+            }
+        }
+        if (process.isAlive()) {
+            destroyProcessTree(process);
+        }
+        try {
+            process.waitFor(10, TimeUnit.SECONDS);
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+        }
+        return !process.isAlive();
     }
 
     private void destroyProcessTree(Process process) {
@@ -3242,6 +3173,10 @@ public final class LimecraftApp extends Application {
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
         }
+    }
+
+    private boolean isWindowsPlatform() {
+        return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win");
     }
 
     private void setServerRunning(boolean running) {
@@ -3290,15 +3225,41 @@ public final class LimecraftApp extends Application {
     }
 
     private void appendServerLog(String line) {
-        Platform.runLater(() -> {
-            if (serverLogOutput != null) {
-                serverLogOutput.appendText(line + System.lineSeparator());
+        if (line == null) {
+            return;
+        }
+        boolean scheduleFlush = false;
+        synchronized (serverLogBufferLock) {
+            serverLogBuffer.append(line).append(System.lineSeparator());
+            if (!serverLogFlushScheduled) {
+                serverLogFlushScheduled = true;
+                scheduleFlush = true;
+            }
+        }
+        if (scheduleFlush) {
+            Platform.runLater(this::flushServerLogBuffer);
+        }
+    }
+
+    private void flushServerLogBuffer() {
+        String text;
+        synchronized (serverLogBufferLock) {
+            text = serverLogBuffer.toString();
+            serverLogBuffer.setLength(0);
+            serverLogFlushScheduled = false;
+        }
+        if (text.isEmpty()) {
+            return;
+        }
+        if (serverLogOutput != null) {
+            serverLogOutput.appendText(text);
+            if (primaryStage != null && primaryStage.isShowing() && !primaryStage.isIconified()) {
                 serverLogOutput.positionCaret(serverLogOutput.getLength());
             }
-            if (serverProgress != null && line.contains("Downloading")) {
-                serverProgress.setProgress(0.5);
-            }
-        });
+        }
+        if (serverProgress != null && text.contains("Downloading")) {
+            serverProgress.setProgress(0.5);
+        }
     }
 
     private void signIn() {
@@ -3669,6 +3630,7 @@ public final class LimecraftApp extends Application {
                 currentGameLaunchStartedAtMillis = System.currentTimeMillis();
                 currentGameLaunchVersionId = selected.id();
                 Platform.runLater(() -> {
+                    minimizeLauncherForGameLaunch();
                     installedClientVersionCache.remove(selected.id());
                     versionsList.refresh();
                     setGameRunning(true);
@@ -3679,16 +3641,45 @@ public final class LimecraftApp extends Application {
                         currentGameProcess = null;
                         recordPlaySessionForCurrentLaunch();
                         setStatus("Minecraft closed", 0);
-                        Platform.runLater(() -> setGameRunning(false));
+                        Platform.runLater(() -> {
+                            setGameRunning(false);
+                            restoreLauncherAfterGameExit();
+                        });
                     }
                 });
                 streamGameLog(process);
                 setStatus("Minecraft launched", 0);
             } catch (Exception ex) {
                 fail(ex);
-                Platform.runLater(() -> setGameRunning(false));
+                Platform.runLater(() -> {
+                    setGameRunning(false);
+                    restoreLauncherAfterGameExit();
+                });
             }
         });
+    }
+
+    private void minimizeLauncherForGameLaunch() {
+        if (primaryStage == null || !primaryStage.isShowing()) {
+            restoreLauncherAfterGameExit = false;
+            return;
+        }
+        restoreLauncherAfterGameExit = !primaryStage.isIconified();
+        if (restoreLauncherAfterGameExit) {
+            primaryStage.setIconified(true);
+        }
+    }
+
+    private void restoreLauncherAfterGameExit() {
+        if (!restoreLauncherAfterGameExit || primaryStage == null) {
+            restoreLauncherAfterGameExit = false;
+            return;
+        }
+        restoreLauncherAfterGameExit = false;
+        primaryStage.setIconified(false);
+        primaryStage.show();
+        primaryStage.toFront();
+        primaryStage.requestFocus();
     }
 
     private void repairSelectedVersion() {
@@ -4898,7 +4889,7 @@ public final class LimecraftApp extends Application {
             if (selected == null) {
                 return null;
             }
-            return crashReportAnalyzer.analyze(instanceDirFor(selected));
+            return crashReportAnalyzer.analyze(activeInstanceDirFor(selected));
         } catch (Exception ignored) {
             return null;
         }
@@ -5009,10 +5000,36 @@ public final class LimecraftApp extends Application {
     }
 
     private void appendLog(String line) {
-        Platform.runLater(() -> {
-            logOutput.appendText(line + System.lineSeparator());
+        if (line == null) {
+            return;
+        }
+        boolean scheduleFlush = false;
+        synchronized (clientLogBufferLock) {
+            clientLogBuffer.append(line).append(System.lineSeparator());
+            if (!clientLogFlushScheduled) {
+                clientLogFlushScheduled = true;
+                scheduleFlush = true;
+            }
+        }
+        if (scheduleFlush) {
+            Platform.runLater(this::flushClientLogBuffer);
+        }
+    }
+
+    private void flushClientLogBuffer() {
+        String text;
+        synchronized (clientLogBufferLock) {
+            text = clientLogBuffer.toString();
+            clientLogBuffer.setLength(0);
+            clientLogFlushScheduled = false;
+        }
+        if (text.isEmpty() || logOutput == null) {
+            return;
+        }
+        logOutput.appendText(text);
+        if (!isGameRunning() && primaryStage != null && primaryStage.isShowing() && !primaryStage.isIconified()) {
             logOutput.positionCaret(logOutput.getLength());
-        });
+        }
     }
 
     private boolean isGameRunning() {
@@ -5026,11 +5043,26 @@ public final class LimecraftApp extends Application {
             return;
         }
         appendLog("[Limecraft] Force-killing game process...");
-        currentGameProcess = null;
-        process.destroyForcibly();
-        recordPlaySessionForCurrentLaunch();
-        setGameRunning(false);
-        setStatus("Minecraft process killed", 0);
+        io.submit(() -> {
+            boolean killed = terminateProcessTree(process, this::appendLog);
+            Platform.runLater(() -> {
+                if (killed) {
+                    boolean wasCurrent = currentGameProcess == process;
+                    if (currentGameProcess == process) {
+                        currentGameProcess = null;
+                    }
+                    if (wasCurrent) {
+                        recordPlaySessionForCurrentLaunch();
+                    }
+                    setGameRunning(false);
+                    setStatus("Minecraft process killed", 0);
+                } else {
+                    appendLog("[Limecraft] Game process is still running after kill attempt.");
+                    setGameRunning(true);
+                    setStatus("Failed to kill Minecraft process", 0);
+                }
+            });
+        });
     }
 
     private String safeFolderName(String versionId) {
@@ -5301,13 +5333,25 @@ public final class LimecraftApp extends Application {
         persistSelectedServerSettings();
         recordPlaySessionForCurrentLaunch();
         saveSettings();
-        if (isGameRunning()) {
-            killRunningGame();
-        }
-        if (isServerRunning()) {
-            killRunningServer();
-        }
+        terminateRunningProcessesForShutdown();
         io.shutdownNow();
+    }
+
+    private void terminateRunningProcessesForShutdown() {
+        Process game = currentGameProcess;
+        if (game != null && game.isAlive()) {
+            appendLog("[Limecraft] Closing launcher; terminating game process...");
+            terminateProcessTree(game, this::appendLog);
+            currentGameProcess = null;
+        }
+
+        Process server = currentServerProcess;
+        if (server != null && server.isAlive()) {
+            appendServerLog("[Limecraft] Closing launcher; terminating server process...");
+            closeServerCommandWriter();
+            terminateProcessTree(server, this::appendServerLog);
+            currentServerProcess = null;
+        }
     }
 
     public static void main(String[] args) {

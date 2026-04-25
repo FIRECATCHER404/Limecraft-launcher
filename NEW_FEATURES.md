@@ -73,8 +73,8 @@ When that phrase is used, the implementation target is the full unchecked backlo
 - [ ] Expand the profile model beyond `id/type/url/releaseTime` so profiles can carry richer metadata.
 - [ ] Add profile metadata such as icon, notes, tags, favorite state, grouping, and playtime tracking.
 - [x] Keep client data in per-version instance folders instead of forcing a shared client workspace.
-- [x] Remove manual custom-version creation from the main launcher flow.
-- [ ] Finish removing remaining custom-version terminology and dead code paths.
+- [x] Keep manual custom-version creation/editing available through `Add Version`.
+- [ ] Finish removing stale shared-workspace wording and dead code paths.
 - [ ] Add backup/snapshot/restore flows before destructive actions like deleting versions, changing loaders, or moving worlds.
 - [ ] Add crash-report and log tooling, including quick-open actions for logs/crash reports and basic diagnosis of likely failures.
 - [ ] Upgrade Java runtime management beyond scanning `C:/Program Files/Java`, including better discovery, version matching, and optional runtime download/install flows.
@@ -192,7 +192,7 @@ These are the parts still not fully defined yet:
 - Whether plugin server platforms count as part of the same feature set
 - Whether CurseForge should be included alongside Modrinth
 - Whether the mod browser should be a pure embedded web page, a launcher-native UI backed by web APIs, or both
-- Whether per-version instance folders should remain the only client mode, or whether an optional shared workspace should ever come back
+- Per-version instance folders are the client mode; shared client workspace support was intentionally removed.
 - Whether multi-account support should include offline account presets too
 - Whether runtime download/install should be fully launcher-managed or only help the user find the right Java
 - Whether portable mode should be the default when launching from a zip/app-image build

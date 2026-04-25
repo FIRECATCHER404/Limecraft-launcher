@@ -139,10 +139,26 @@ public final class ModrinthService {
             throw new IOException("No downloadable Modrinth file was resolved.");
         }
         FileRef file = version.files().stream().filter(FileRef::primary).findFirst().orElse(version.files().get(0));
-        Files.createDirectories(modsDir);
-        Path target = modsDir.resolve(file.filename());
+        String filename = safeFilename(file.filename());
+        if (filename.isBlank()) {
+            throw new IOException("The selected Modrinth file has no valid filename.");
+        }
+        Path root = modsDir.toAbsolutePath().normalize();
+        Files.createDirectories(root);
+        Path target = root.resolve(filename).normalize();
+        if (!target.startsWith(root)) {
+            throw new IOException("Refusing to download outside the mods folder: " + file.filename());
+        }
         downloader.downloadTo(file.url(), target);
         return target;
+    }
+
+    private String safeFilename(String filename) {
+        if (filename == null || filename.isBlank()) {
+            return "";
+        }
+        String onlyName = Path.of(filename.replace('\\', '/')).getFileName().toString();
+        return onlyName.replaceAll("[\\\\/:*?\"<>|]", "_").trim();
     }
 
     private Version parseVersion(JsonObject object) {

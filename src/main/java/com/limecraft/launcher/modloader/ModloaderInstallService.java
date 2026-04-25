@@ -3,6 +3,7 @@ package com.limecraft.launcher.modloader;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.limecraft.launcher.core.Downloader;
 import com.limecraft.launcher.core.HttpClient;
 import com.limecraft.launcher.core.MinecraftInstallService;
 import com.limecraft.launcher.core.VersionEntry;
@@ -171,7 +172,7 @@ public final class ModloaderInstallService {
     }
 
     private ModloaderInstallResult installForgeLikeClient(ModloaderInstallRequest request, MinecraftInstallService.ProgressListener listener, String loaderId, String loaderVersion) throws Exception {
-        ensureBaseInstalled(request.baseVersion(), listener);
+        ensureBaseInstalledInCurrentGameDir(request.baseVersion(), listener);
 
         Path installersDir = gameDir.resolve("cache").resolve("installers");
         Files.createDirectories(installersDir);
@@ -252,13 +253,21 @@ public final class ModloaderInstallService {
     }
 
     private void ensureBaseInstalled(VersionEntry base, MinecraftInstallService.ProgressListener listener) throws Exception {
+        if (installService.versionInstalled(base.id())) {
+            return;
+        }
+        listener.onProgress("Installing base version " + base.id() + "...", 0.1);
+        installService.installVersion(base, listener);
+    }
+
+    private void ensureBaseInstalledInCurrentGameDir(VersionEntry base, MinecraftInstallService.ProgressListener listener) throws Exception {
         Path baseDir = gameDir.resolve("versions").resolve(base.id());
         Path json = baseDir.resolve(base.id() + ".json");
         Path jar = baseDir.resolve(base.id() + ".jar");
         if (Files.exists(json) && Files.exists(jar)) {
             return;
         }
-        listener.onProgress("Installing base version " + base.id() + "...", 0.1);
+        listener.onProgress("Installing base version " + base.id() + " for installer compatibility...", 0.1);
         installService.installVersion(base, listener);
     }
 
@@ -271,12 +280,12 @@ public final class ModloaderInstallService {
             return;
         }
 
-        Path parentJson = gameDir.resolve("versions").resolve(parentId).resolve(parentId + ".json");
+        Path parentJson = installService.findVersionJson(parentId);
         if (!Files.exists(parentJson)) {
             throw new IllegalStateException("Missing inherited metadata for " + parentId);
         }
         JsonObject parentMeta = JsonParser.parseString(Files.readString(parentJson, StandardCharsets.UTF_8)).getAsJsonObject();
-        installService.installMetadataDependencies(parentMeta, listener);
+        installService.installMetadataDependenciesIfNeeded(parentMeta, listener);
         ensureInheritedDependenciesInstalled(parentMeta, listener, visiting);
     }
 
@@ -510,14 +519,7 @@ public final class ModloaderInstallService {
     }
 
     private void downloadFile(String url, Path target) throws IOException {
-        Files.createDirectories(target.getParent());
-        Request request = new Request.Builder().url(url).get().build();
-        try (Response response = http.raw().newCall(request).execute()) {
-            if (!response.isSuccessful() || response.body() == null) {
-                throw new IOException("Failed download: " + url + " code=" + response.code());
-            }
-            Files.write(target, response.body().bytes());
-        }
+        new Downloader(http.raw()).downloadTo(url, target);
     }
 
     private JsonArray getJsonArray(String url) throws Exception {
