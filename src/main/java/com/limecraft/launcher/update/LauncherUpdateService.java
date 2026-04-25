@@ -72,7 +72,8 @@ public final class LauncherUpdateService {
             throw new IOException("Self-update is only available from the packaged Limecraft app.");
         }
 
-        Path scriptPath = appPaths.siblingPath("-apply-update.ps1");
+        String safeVersion = safeFileName(releaseInfo.version().isBlank() ? "update" : releaseInfo.version());
+        Path scriptPath = appPaths.siblingPath("-apply-update-" + safeVersion + "-" + currentPid + ".ps1");
         String executableName = appPaths.executablePath().getFileName() == null
                 ? AppVersion.APP_NAME + ".exe"
                 : appPaths.executablePath().getFileName().toString();
@@ -81,8 +82,10 @@ public final class LauncherUpdateService {
                 $pidToWait = %d
                 $appRoot = '%s'
                 $appExe = '%s'
-                $workRoot = '%s'
+                $stagingRoot = '%s'
+                $workRoot = Join-Path $stagingRoot ('update-' + [guid]::NewGuid().ToString('N'))
                 $extractRoot = Join-Path $workRoot 'extract'
+                $downloadTemp = Join-Path $workRoot ('download-' + [guid]::NewGuid().ToString('N') + '.tmp')
                 $downloadZip = Join-Path $workRoot '%s'
                 $backupRoot = '%s'
                 $assetUrl = '%s'
@@ -97,22 +100,52 @@ public final class LauncherUpdateService {
                     }
                 }
 
+                function Invoke-WithRetry([scriptblock]$action, [string]$description) {
+                    $lastError = $null
+                    for ($attempt = 1; $attempt -le 20; $attempt++) {
+                        try {
+                            & $action
+                            return
+                        } catch {
+                            $lastError = $_
+                            Start-Sleep -Milliseconds ([Math]::Min(2500, 150 * $attempt))
+                        }
+                    }
+                    throw ($description + ' failed after retries: ' + $lastError.Exception.Message)
+                }
+
                 try {
                     while (Get-Process -Id $pidToWait -ErrorAction SilentlyContinue) {
                         Start-Sleep -Milliseconds 500
                     }
+                    Start-Sleep -Milliseconds 750
+
+                    New-Item -ItemType Directory -Path $stagingRoot -Force | Out-Null
+                    Get-ChildItem -LiteralPath $stagingRoot -Directory -ErrorAction SilentlyContinue |
+                        Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-3) } |
+                        ForEach-Object {
+                            try {
+                                Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction Stop
+                            } catch {
+                            }
+                        }
 
                     if (Test-Path $workRoot) {
-                        Remove-Item -LiteralPath $workRoot -Recurse -Force
+                        Remove-Item -LiteralPath $workRoot -Recurse -Force -ErrorAction SilentlyContinue
                     }
                     New-Item -ItemType Directory -Path $workRoot | Out-Null
 
-                    Invoke-WebRequest -Uri $assetUrl -Headers @{ 'User-Agent' = $userAgent; 'Accept' = 'application/octet-stream' } -OutFile $downloadZip
+                    Invoke-WithRetry {
+                        Invoke-WebRequest -Uri $assetUrl -Headers @{ 'User-Agent' = $userAgent; 'Accept' = 'application/octet-stream' } -OutFile $downloadTemp
+                    } 'Download update zip'
 
-                    if (Test-Path $extractRoot) {
-                        Remove-Item -LiteralPath $extractRoot -Recurse -Force
-                    }
-                    Expand-Archive -LiteralPath $downloadZip -DestinationPath $extractRoot -Force
+                    Invoke-WithRetry {
+                        Move-Item -LiteralPath $downloadTemp -Destination $downloadZip -Force
+                    } 'Finalize update zip'
+
+                    Invoke-WithRetry {
+                        Expand-Archive -LiteralPath $downloadZip -DestinationPath $extractRoot -Force
+                    } 'Extract update zip'
 
                     $packageRoot = Get-ChildItem -LiteralPath $extractRoot -Directory | Select-Object -First 1
                     if ($null -eq $packageRoot) {
@@ -129,17 +162,26 @@ public final class LauncherUpdateService {
                     }
 
                     if (Test-Path $backupRoot) {
-                        Remove-Item -LiteralPath $backupRoot -Recurse -Force
+                        Invoke-WithRetry {
+                            Remove-Item -LiteralPath $backupRoot -Recurse -Force
+                        } 'Remove old update backup'
                     }
                     if (Test-Path $appRoot) {
-                        Move-Item -LiteralPath $appRoot -Destination $backupRoot
+                        Invoke-WithRetry {
+                            Move-Item -LiteralPath $appRoot -Destination $backupRoot
+                        } 'Move current app to backup'
                     }
-                    Move-Item -LiteralPath $packageRoot.FullName -Destination $appRoot
+                    Invoke-WithRetry {
+                        Move-Item -LiteralPath $packageRoot.FullName -Destination $appRoot
+                    } 'Move updated app into place'
 
                     Start-Process -FilePath $appExe
                 } catch {
                     if ((-not (Test-Path $appRoot)) -and (Test-Path $backupRoot)) {
-                        Move-Item -LiteralPath $backupRoot -Destination $appRoot
+                        try {
+                            Move-Item -LiteralPath $backupRoot -Destination $appRoot
+                        } catch {
+                        }
                     }
                     if (Test-Path $appExe) {
                         Start-Process -FilePath $appExe
@@ -150,9 +192,9 @@ public final class LauncherUpdateService {
                 currentPid,
                 escapePowerShellLiteral(appPaths.appRoot().toString()),
                 escapePowerShellLiteral(appPaths.executablePath().toString()),
-                escapePowerShellLiteral(appPaths.siblingPath("-update-work").toString()),
-                escapePowerShellLiteral(releaseInfo.asset().name()),
-                escapePowerShellLiteral(appPaths.siblingPath("-backup").toString()),
+                escapePowerShellLiteral(appPaths.siblingPath("-update-staging").toString()),
+                escapePowerShellLiteral(safeFileName(releaseInfo.asset().name())),
+                escapePowerShellLiteral(appPaths.siblingPath("-backup-" + safeVersion + "-" + currentPid).toString()),
                 escapePowerShellLiteral(releaseInfo.asset().downloadUrl()),
                 escapePowerShellLiteral(releaseInfo.htmlUrl().isBlank() ? AppVersion.RELEASES_URL : releaseInfo.htmlUrl()),
                 escapePowerShellLiteral(AppVersion.userAgent()),
@@ -246,6 +288,11 @@ public final class LauncherUpdateService {
 
     private String escapePowerShellLiteral(String value) {
         return (value == null ? "" : value).replace("'", "''");
+    }
+
+    private String safeFileName(String value) {
+        String cleaned = (value == null || value.isBlank() ? "update" : value).replaceAll("[\\\\/:*?\"<>|]", "_");
+        return cleaned.isBlank() ? "update" : cleaned;
     }
 
     public record ReleaseAsset(String name, String downloadUrl) {

@@ -5,7 +5,7 @@ set "SCRIPT_DIR=%~dp0"
 cd /d "%SCRIPT_DIR%" || goto :cd_failed
 
 set "VERSION=%~1"
-if "%VERSION%"=="" set "VERSION=1.7"
+if "%VERSION%"=="" set "VERSION=1.8"
 set "MODE=%~2"
 set "ZIP_NAME=Limecraft-%VERSION%-windows.zip"
 set "APP_IMAGE=%CD%\dist\Limecraft"

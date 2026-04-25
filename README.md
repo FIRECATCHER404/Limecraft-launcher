@@ -92,6 +92,7 @@ Limecraft has a dedicated Server tab for creating and launching Minecraft server
 - Provides error reporting shortcuts that open the GitHub issues page and copy useful error details when available.
 - Checks GitHub Releases for updates on startup.
 - Packaged builds can self-update by downloading the release zip, staging it in a sibling temp folder, validating the app structure, swapping folders, and reopening the launcher.
+- Uses a unique update staging folder and temporary download filename for each update attempt so stale or locked update zips do not block later updates.
 
 ## Packaging and Development
 

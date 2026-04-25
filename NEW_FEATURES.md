@@ -98,6 +98,7 @@ When that phrase is used, the implementation target is the full unchecked backlo
   - download updates into a temp sibling folder
   - verify the downloaded package before swap
   - only replace the live packaged app after verification succeeds
+- [x] Use a unique update staging folder and temp download file for each updater run so stale locked zips cannot break the next update attempt.
 - [x] Add a self-update flow that:
   - closes Limecraft
   - downloads the new packaged build
