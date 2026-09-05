@@ -121,12 +121,9 @@ Limecraft has a dedicated Server tab for creating and launching Minecraft server
 
 ## Screenshots
 
-<img width="1919" height="1008" alt="Limecraft client tab" src="https://github.com/user-attachments/assets/b04fffbb-d70d-4473-a3fc-72846c15f8e4" />
+<img width="1919" height="1028" alt="image" src="https://github.com/user-attachments/assets/de304b96-4ea7-4426-8a53-2013d58d5fca" />
+<img width="1919" height="1029" alt="image" src="https://github.com/user-attachments/assets/eedc1270-2398-4820-bc10-b616217dfef3" />
+<img width="1916" height="1028" alt="image" src="https://github.com/user-attachments/assets/40a90333-d500-4679-bfca-a1e81b621a8f" />
 
-<img width="1919" height="1004" alt="Limecraft launcher UI" src="https://github.com/user-attachments/assets/7416dce3-9065-4899-ab05-ab01e3f9b83b" />
 
-<img width="1919" height="1006" alt="Limecraft screenshot" src="https://github.com/user-attachments/assets/2f332f25-0c84-4395-9060-fa35ac5ade6d" />
 
-<img width="1919" height="1003" alt="Limecraft server tab" src="https://github.com/user-attachments/assets/817247b7-79b5-4108-a08f-591fff65b006" />
-
-<img width="751" height="268" alt="Limecraft modloader install window" src="https://github.com/user-attachments/assets/e0fe4adf-5a35-44d6-9469-f79a6ff216f5" />
